@@ -15,6 +15,18 @@ CONFIG_BT_NIMBLE_ROLE_CENTRAL=n
 CONFIG_BT_NIMBLE_ROLE_OBSERVER=n
 CONFIG_BT_NIMBLE_MAX_CONNECTIONS=1
 
+# --- Ahorro de energia ---
+# El controlador BLE del ESP32-S3 puede usar el cristal principal como reloj de
+# baja potencia, asi que el light sleep funciona sin cristal externo de 32 kHz.
+# A cambio, el cristal principal sigue alimentado mientras duerme.
+CONFIG_PM_ENABLE=y
+CONFIG_FREERTOS_USE_TICKLESS_IDLE=y
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_80=y
+CONFIG_BT_CTRL_MODEM_SLEEP=y
+CONFIG_BT_CTRL_MODEM_SLEEP_MODE_1=y
+CONFIG_BT_CTRL_LPCLK_SEL_MAIN_XTAL=y
+CONFIG_BT_CTRL_MAIN_XTAL_PU_DURING_LIGHT_SLEEP=y
+
 # Stack del main task
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=7168
 

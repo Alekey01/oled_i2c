@@ -6,5 +6,6 @@ idf_component_register(SRCS "crab.c" "weather_icon.c" "main.c"
                                 esp_driver_gpio
                                 bt
                                 esp_timer
+                                esp_pm
                                 nvs_flash
                        INCLUDE_DIRS ".")

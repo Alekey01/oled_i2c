@@ -123,6 +123,27 @@ static int gap_event(struct ble_gap_event *event, void *arg)
         ESP_LOGI(TAG, "conexion %s", s_connected ? "establecida" : "fallida");
         if (!s_connected) {
             advertise();
+            break;
+        }
+        /*
+         * Los datos llegan cada 60 s, asi que no hace falta latencia de 30 ms.
+         * Con intervalo de 300 ms y latencia 4, el radio puede saltarse hasta 4
+         * eventos seguidos: despierta como mucho cada 1.5 s.
+         *
+         * El supervision timeout tiene que ser mayor que (1+latencia) * itvl_max
+         * * 2 = 3 s; se deja en 6 s.
+         */
+        {
+            struct ble_gap_upd_params slow = {
+                .itvl_min = 80,               /* 100 ms, unidades de 1.25 ms */
+                .itvl_max = 240,              /* 300 ms */
+                .latency = 4,
+                .supervision_timeout = 600,   /* 6 s, unidades de 10 ms */
+            };
+            int rc = ble_gap_update_params(event->connect.conn_handle, &slow);
+            if (rc != 0) {
+                ESP_LOGW(TAG, "no se pudo negociar el intervalo lento: %d", rc);
+            }
         }
         break;
 
@@ -174,9 +195,14 @@ static void advertise(void)
         return;
     }
 
+    /* Unidades de 0.625 ms. El anuncio por defecto va a ~30 ms, que para un
+       reloj es un desperdicio de radio: a 500-1000 ms tarda un poco mas en
+       aparecer al buscarlo y consume una fraccion. */
     struct ble_gap_adv_params adv = {
         .conn_mode = BLE_GAP_CONN_MODE_UND,
         .disc_mode = BLE_GAP_DISC_MODE_GEN,
+        .itvl_min = 800,    /* 500 ms */
+        .itvl_max = 1600,   /* 1000 ms */
     };
     rc = ble_gap_adv_start(s_addr_type, NULL, BLE_HS_FOREVER, &adv, gap_event, NULL);
     if (rc != 0) {

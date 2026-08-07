@@ -82,6 +82,11 @@ void ssd1306_clear(ssd1306_t *d)
     memset(d->fb, 0, sizeof(d->fb));
 }
 
+esp_err_t ssd1306_power(ssd1306_t *d, bool on)
+{
+    return cmd(d, on ? 0xAF : 0xAE);
+}
+
 esp_err_t ssd1306_flush(ssd1306_t *d)
 {
     ESP_RETURN_ON_ERROR(cmd(d, 0x21), TAG, "set col");       /* rango de columnas */

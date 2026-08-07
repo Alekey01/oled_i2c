@@ -30,6 +30,9 @@
 <p>Enciende el reloj y conecta. Al conectar se envían solas la hora del teléfono y
 el clima de tu ubicación (Open-Meteo, sin API key).</p>
 
+<p>Mientras esta pestaña siga abierta se reenvía la hora cada minuto y el clima
+cada 10 minutos, y si se pierde el enlace se reconecta solo.</p>
+
 <button id="connect">Conectar por Bluetooth</button>
 <button id="sync" disabled>Reenviar hora y clima</button>
 <button id="disconnect" disabled>Desconectar</button>
@@ -44,12 +47,100 @@ const CHR_WEATHER = '5c8b0003-7a2e-4f1d-9c3a-1b2d4e6f8a90';
 const $ = id => document.getElementById(id);
 const log = msg => { $('log').textContent = msg + '\n' + $('log').textContent; };
 
+// La hora se reenvía seguido porque corrige la deriva del oscilador del ESP32.
+// El clima no: Open-Meteo actualiza cada 15 min, pedirlo más seguido no aporta.
+const PERIODO_HORA_MS  = 60 * 1000;
+const PERIODO_CLIMA_MS = 10 * 60 * 1000;
+const RECONEXION_MIN_MS = 2000;
+const RECONEXION_MAX_MS = 30000;
+
 let device = null, chrTime = null, chrWeather = null;
+let desconexionManual = false;
+let timers = [];
+let esperaReconexion = RECONEXION_MIN_MS;
+let reconexionActiva = false;
 
 function setConnected(on) {
   $('connect').disabled = on;
   $('sync').disabled = !on;
   $('disconnect').disabled = !on;
+}
+
+const conectado = () => device?.gatt?.connected === true;
+
+function arrancarTimers() {
+  pararTimers();
+  timers.push(setInterval(() => {
+    if (conectado()) sendTime().catch(e => log('✗ hora: ' + e.message));
+  }, PERIODO_HORA_MS));
+  timers.push(setInterval(() => {
+    if (conectado()) sendWeather().catch(e => log('✗ clima: ' + e.message));
+  }, PERIODO_CLIMA_MS));
+}
+
+function pararTimers() {
+  timers.forEach(clearInterval);
+  timers = [];
+}
+
+// Reutilizada por la conexión inicial y por cada reintento. requestDevice() sí
+// exige un gesto del usuario, pero gatt.connect() sobre un dispositivo ya
+// autorizado no: por eso la reconexión puede ser automática.
+async function abrirGatt(etiqueta) {
+  const server  = await device.gatt.connect();
+  const service = await server.getPrimaryService(SVC);
+  chrTime    = await service.getCharacteristic(CHR_TIME);
+  chrWeather = await service.getCharacteristic(CHR_WEATHER);
+  setConnected(true);
+  esperaReconexion = RECONEXION_MIN_MS;
+  log(`✓ ${etiqueta} a ${device.name}`);
+  arrancarTimers();
+  await syncAll();
+}
+
+// Un solo hilo de reintentos a la vez: sin esta bandera, dos desconexiones
+// seguidas dejarían dos cadenas corriendo en paralelo.
+function programarReconexion() {
+  if (reconexionActiva) return;
+  reconexionActiva = true;
+  reintentar();
+}
+
+function reintentar() {
+  setTimeout(async () => {
+    if (desconexionManual || conectado()) {
+      reconexionActiva = false;
+      return;
+    }
+    try {
+      await abrirGatt('Reconectado');
+      reconexionActiva = false;
+    } catch (e) {
+      // Backoff exponencial: si el reloj está apagado o fuera de alcance, no
+      // tiene sentido insistir cada 2 s indefinidamente.
+      esperaReconexion = Math.min(esperaReconexion * 2, RECONEXION_MAX_MS);
+      log(`… sin respuesta, reintento en ${esperaReconexion / 1000} s`);
+      // Si el enlace quedó abierto pero el servicio no se pudo leer, hay que
+      // cerrarlo: el handler de desconexión reprograma la cadena.
+      if (conectado()) {
+        reconexionActiva = false;
+        device.gatt.disconnect();
+        return;
+      }
+      reintentar();
+    }
+  }, esperaReconexion);
+}
+
+function alDesconectar() {
+  pararTimers();
+  setConnected(false);
+  if (desconexionManual) {
+    log('✗ Desconectado.');
+    return;
+  }
+  log('✗ Enlace perdido, reconectando…');
+  programarReconexion();
 }
 
 $('connect').onclick = async () => {
@@ -63,25 +154,24 @@ $('connect').onclick = async () => {
       filters: [{ services: [SVC] }],
       optionalServices: [SVC],
     });
-    device.addEventListener('gattserverdisconnected', () => {
-      log('✗ Desconectado.');
-      setConnected(false);
-    });
-    const server  = await device.gatt.connect();
-    const service = await server.getPrimaryService(SVC);
-    chrTime    = await service.getCharacteristic(CHR_TIME);
-    chrWeather = await service.getCharacteristic(CHR_WEATHER);
-    setConnected(true);
-    log('✓ Conectado a ' + device.name);
-    await syncAll();          // sincroniza sola, sin esperar al boton
+    device.addEventListener('gattserverdisconnected', alDesconectar);
+    desconexionManual = false;
+    await abrirGatt('Conectado');
   } catch (e) {
     log('✗ ' + e.message);
+    // Mismo caso que arriba: enlace abierto pero servicio ilegible.
+    if (conectado()) device.gatt.disconnect();
   }
 };
 
-$('disconnect').onclick = () => device?.gatt?.disconnect();
+$('disconnect').onclick = () => {
+  desconexionManual = true;   // corta el ciclo de reintentos
+  pararTimers();
+  device?.gatt?.disconnect();
+};
 
 async function sendTime() {
+  if (!chrTime || !conectado()) throw new Error('sin conexión');
   const now = new Date();
   const epoch = Math.floor(now.getTime() / 1000);
   // getTimezoneOffset() son minutos hacia UTC; el firmware quiere segundos desde UTC.
@@ -104,6 +194,7 @@ function coords() {
 }
 
 async function sendWeather() {
+  if (!chrWeather || !conectado()) throw new Error('sin conexión');
   const { lat, lon } = await coords();
   const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat.toFixed(4)}`
             + `&longitude=${lon.toFixed(4)}`

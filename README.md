@@ -21,6 +21,30 @@ VISTA RELOJ                       VISTA CLIMA                VISTA CANGREJO
 - Entre sincronizaciones el reloj corre con el oscilador interno del ESP32-S3, que
   deriva unos segundos por día. Vuelve a sincronizar cada tanto.
 
+## Ahorro de energía
+
+Pensado para funcionar con LiPo:
+
+| Medida | Qué hace |
+|---|---|
+| Light sleep automático | CPU a 80 MHz (mínimo 40) y el chip duerme entre eventos |
+| Botón por interrupción | Antes se sondeaba cada 20 ms, lo que despertaba el CPU 50 veces/s |
+| Refresco a 1 Hz alineado al segundo | Antes 4 Hz; solo el segundero binario cambia a esa velocidad |
+| OLED se apaga a los 30 s | Vuelve con el botón; el reloj sigue contando y recibiendo por BLE |
+| Anuncio BLE a 500–1000 ms | Por defecto va a ~30 ms |
+| Conexión BLE a 300 ms con latencia 4 | El radio despierta como mucho cada 1.5 s |
+
+El controlador BLE del ESP32-S3 usa el **cristal principal** como reloj de baja
+potencia (`CONFIG_BT_CTRL_LPCLK_SEL_MAIN_XTAL`), así que el light sleep funciona
+sin cristal externo de 32 kHz. A cambio, ese cristal sigue alimentado mientras
+duerme, así que el ahorro es bueno pero no tan profundo como con un 32 kHz.
+
+> Con el light sleep activo la consola USB no es confiable. Para depurar,
+> desactiva `APP_LIGHT_SLEEP` en `menuconfig`.
+
+En la vista del cangrejo el refresco sube a 80 ms: es la vista más cara, pero se
+apaga sola a los 30 s como las demás.
+
 ## Conexiones
 
 | OLED | ESP32-S3 (XIAO) | Pin de la placa |

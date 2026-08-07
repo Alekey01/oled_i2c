@@ -16,7 +16,9 @@
 
 #include "driver/gpio.h"
 #include "esp_log.h"
+#include "esp_pm.h"
 #include "esp_random.h"
+#include "esp_sleep.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
@@ -60,6 +62,14 @@ static bool s_time_set;
 static int64_t s_last_sync_us;
 
 static volatile view_t s_view = VIEW_CLOCK;
+
+static TaskHandle_t s_display_h;
+static TaskHandle_t s_button_h;
+
+/* Solo las escribe la tarea de pantalla (s_screen_on) o la del boton
+   (s_last_activity_us); la otra unicamente las lee. */
+static volatile bool s_screen_on = true;
+static volatile int64_t s_last_activity_us;
 
 /* Animacion del cangrejo; solo la toca la tarea de pantalla. */
 static int s_crab_x = -CRAB_W;
@@ -298,9 +308,25 @@ static void render(void)
 
 /* --------------------------------------------------------------- tareas */
 
+/*
+ * Milisegundos que faltan para el proximo segundo. Redibujar 4 veces por segundo
+ * no aporta nada: lo unico que cambia a esa velocidad es el segundero binario,
+ * y cambia una vez por segundo. Alinearse al borde ademas evita que el segundero
+ * se vea saltar tarde.
+ */
+static uint32_t ms_al_proximo_segundo(void)
+{
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    return 1000 - (uint32_t)(tv.tv_usec / 1000) + 5;   /* 5 ms de margen */
+}
+
 static void display_task(void *arg)
 {
+    const int64_t timeout_us = (int64_t)CONFIG_APP_SCREEN_TIMEOUT_S * 1000000;
     view_t last = s_view;
+
+    s_last_activity_us = esp_timer_get_time();
 
     while (1) {
         /* Al entrar a la vista del cangrejo se reinicia el recorrido, para que
@@ -315,43 +341,100 @@ static void display_task(void *arg)
             }
         }
 
+        if (timeout_us > 0 && esp_timer_get_time() - s_last_activity_us > timeout_us) {
+            if (s_screen_on) {
+                xSemaphoreTake(s_draw_mux, portMAX_DELAY);
+                ssd1306_power(&s_oled, false);
+                xSemaphoreGive(s_draw_mux);
+                s_screen_on = false;
+                ESP_LOGI(TAG, "pantalla apagada por inactividad");
+            }
+            /* Sin nada que dibujar, la tarea se bloquea de verdad: es lo que
+               deja al chip entrar en light sleep. */
+            ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+            continue;
+        }
+
+        /* Se dibuja el cuadro nuevo antes de encender, para no mostrar por un
+           instante lo que quedo en la RAM del panel. */
+        bool encendiendo = !s_screen_on;
+
+        uint32_t espera_ms;
         if (s_view == VIEW_CRAB) {
             crab_step();
             render();
-            vTaskDelay(pdMS_TO_TICKS(REFRESH_MS_CRAB));
+            espera_ms = REFRESH_MS_CRAB;
         } else {
             render();
-            vTaskDelay(pdMS_TO_TICKS(REFRESH_MS_STATIC));
+            espera_ms = ms_al_proximo_segundo();
         }
+
+        if (encendiendo) {
+            xSemaphoreTake(s_draw_mux, portMAX_DELAY);
+            ssd1306_power(&s_oled, true);
+            xSemaphoreGive(s_draw_mux);
+            s_screen_on = true;
+        }
+
+        /* La espera es interrumpible: el boton notifica y se redibuja al toque. */
+        ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(espera_ms));
     }
 }
 
-/* Sondeo con antirrebote: el boton BOOT esta a GND con pull-up interno. */
+static void IRAM_ATTR button_isr(void *arg)
+{
+    BaseType_t hp = pdFALSE;
+    vTaskNotifyGiveFromISR(s_button_h, &hp);
+    portYIELD_FROM_ISR(hp);
+}
+
+/*
+ * El boton BOOT esta a GND con pull-up interno. Se atiende por interrupcion, no
+ * por sondeo: un sondeo cada 20 ms despertaria al CPU 50 veces por segundo y
+ * anularia el light sleep.
+ */
 static void button_task(void *arg)
 {
     const gpio_config_t cfg = {
         .pin_bit_mask = 1ULL << CONFIG_APP_BUTTON_GPIO,
         .mode = GPIO_MODE_INPUT,
         .pull_up_en = GPIO_PULLUP_ENABLE,
+        .intr_type = GPIO_INTR_LOW_LEVEL,
     };
     ESP_ERROR_CHECK(gpio_config(&cfg));
+    ESP_ERROR_CHECK(gpio_install_isr_service(0));
+    ESP_ERROR_CHECK(gpio_isr_handler_add(CONFIG_APP_BUTTON_GPIO, button_isr, NULL));
 
-    bool prev = true;   /* sin presionar = alto */
+    /* Para que el boton tambien saque al chip del light sleep. Del light sleep
+       solo se puede despertar por nivel, no por flanco. */
+    ESP_ERROR_CHECK(gpio_wakeup_enable(CONFIG_APP_BUTTON_GPIO, GPIO_INTR_LOW_LEVEL));
+    ESP_ERROR_CHECK(esp_sleep_enable_gpio_wakeup());
+
     while (1) {
-        bool level = gpio_get_level(CONFIG_APP_BUTTON_GPIO) != 0;
-        if (prev && !level) {                    /* flanco de bajada */
-            vTaskDelay(pdMS_TO_TICKS(30));       /* antirrebote */
-            if (gpio_get_level(CONFIG_APP_BUTTON_GPIO) == 0) {
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+
+        /* Con interrupcion por nivel hay que apagarla mientras se atiende, o se
+           redispara en bucle mientras el boton siga presionado. */
+        gpio_intr_disable(CONFIG_APP_BUTTON_GPIO);
+        vTaskDelay(pdMS_TO_TICKS(30));   /* antirrebote */
+
+        if (gpio_get_level(CONFIG_APP_BUTTON_GPIO) == 0) {
+            /* Con la pantalla apagada, el primer toque solo la enciende: seria
+               molesto que ademas cambiara de vista sin que la hayas visto. */
+            if (s_screen_on) {
                 s_view = (s_view + 1) % VIEW_COUNT;
                 ESP_LOGI(TAG, "vista %d", s_view);
-                render();                        /* respuesta inmediata al toque */
-                while (gpio_get_level(CONFIG_APP_BUTTON_GPIO) == 0) {
-                    vTaskDelay(pdMS_TO_TICKS(20));   /* espera a que lo suelten */
-                }
+            }
+            s_last_activity_us = esp_timer_get_time();
+            xTaskNotifyGive(s_display_h);
+
+            while (gpio_get_level(CONFIG_APP_BUTTON_GPIO) == 0) {
+                vTaskDelay(pdMS_TO_TICKS(20));   /* espera a que lo suelten */
             }
         }
-        prev = level;
-        vTaskDelay(pdMS_TO_TICKS(20));
+
+        ulTaskNotifyTake(pdTRUE, 0);   /* descarta lo que hayan dejado los rebotes */
+        gpio_intr_enable(CONFIG_APP_BUTTON_GPIO);
     }
 }
 
@@ -382,6 +465,19 @@ void app_main(void)
     ESP_ERROR_CHECK(ble_sync_start(CONFIG_APP_BLE_NAME, &cb));
     ESP_LOGI(TAG, "listo, esperando al celular");
 
-    xTaskCreate(display_task, "display", 4096, NULL, 4, NULL);
-    xTaskCreate(button_task, "button", 3072, NULL, 5, NULL);
+    xTaskCreate(display_task, "display", 4096, NULL, 4, &s_display_h);
+    xTaskCreate(button_task, "button", 3072, NULL, 5, &s_button_h);
+
+#if CONFIG_APP_LIGHT_SLEEP
+    /* Se configura al final, cuando ya no queda nada que despierte al CPU de
+       forma periodica: el boton va por interrupcion y la pantalla se refresca
+       una vez por segundo. */
+    const esp_pm_config_t pm = {
+        .max_freq_mhz = 80,
+        .min_freq_mhz = 40,     /* frecuencia del cristal principal */
+        .light_sleep_enable = true,
+    };
+    ESP_ERROR_CHECK(esp_pm_configure(&pm));
+    ESP_LOGI(TAG, "light sleep activo (80/40 MHz)");
+#endif
 }

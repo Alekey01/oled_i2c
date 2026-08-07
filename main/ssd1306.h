@@ -23,6 +23,10 @@ esp_err_t ssd1306_init(ssd1306_t *d, int sda_gpio, int scl_gpio, uint8_t addr, u
 void ssd1306_clear(ssd1306_t *d);
 esp_err_t ssd1306_flush(ssd1306_t *d);
 
+/* Apaga o enciende el panel. Apagado consume practicamente nada y conserva el
+   contenido de su RAM; el framebuffer del ESP32 tampoco se toca. */
+esp_err_t ssd1306_power(ssd1306_t *d, bool on);
+
 void ssd1306_pixel(ssd1306_t *d, int x, int y, bool on);
 void ssd1306_fill_rect(ssd1306_t *d, int x, int y, int w, int h, bool on);
 void ssd1306_rect(ssd1306_t *d, int x, int y, int w, int h, bool on);

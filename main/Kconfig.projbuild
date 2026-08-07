@@ -7,6 +7,23 @@ menu "Reloj 8 bits + Clima (BLE)"
             Con este nombre aparece el reloj al buscarlo desde el celular.
             Maximo 20 caracteres para que quepa en el paquete de anuncio.
 
+    config APP_SCREEN_TIMEOUT_S
+        int "Segundos de inactividad antes de apagar el OLED"
+        default 30
+        range 0 3600
+        help
+            El panel se apaga solo y vuelve al presionar el boton. Con la
+            pantalla apagada el reloj sigue contando y recibiendo por BLE.
+            0 = nunca apagar.
+
+    config APP_LIGHT_SLEEP
+        bool "Light sleep automatico"
+        default y
+        help
+            Baja el CPU a 80 MHz y deja que el chip duerma entre eventos.
+            Desactivalo si necesitas 'idf.py monitor' estable: la consola por
+            USB no sobrevive bien al light sleep.
+
     config APP_BUTTON_GPIO
         int "GPIO del boton que alterna las vistas"
         default 0
