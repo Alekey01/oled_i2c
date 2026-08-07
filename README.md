@@ -30,7 +30,7 @@ Pensado para funcionar con LiPo:
 | Light sleep automático | CPU a 80 MHz (mínimo 40) y el chip duerme entre eventos |
 | Botón por interrupción | Antes se sondeaba cada 20 ms, lo que despertaba el CPU 50 veces/s |
 | Refresco a 1 Hz alineado al segundo | Antes 4 Hz; solo el segundero binario cambia a esa velocidad |
-| OLED se apaga a los 30 s | Vuelve con el botón; el reloj sigue contando y recibiendo por BLE |
+| OLED se apaga a los 5 min | Vuelve con el botón; el reloj sigue contando y recibiendo por BLE |
 | Anuncio BLE a 500–1000 ms | Por defecto va a ~30 ms |
 | Conexión BLE a 300 ms con latencia 4 | El radio despierta como mucho cada 1.5 s |
 
@@ -43,7 +43,7 @@ duerme, así que el ahorro es bueno pero no tan profundo como con un 32 kHz.
 > desactiva `APP_LIGHT_SLEEP` en `menuconfig`.
 
 En la vista del cangrejo el refresco sube a 80 ms: es la vista más cara, pero se
-apaga sola a los 30 s como las demás.
+apaga sola a los 5 min como las demás.
 
 ## Conexiones
 
@@ -105,7 +105,7 @@ hace falta configurar zona horaria en el firmware: el celular la trae puesta.
 
 | Archivo | Qué hace |
 |---------|----------|
-| `main/main.c` | Arranque, las dos vistas, botón, estado compartido |
+| `main/main.c` | Arranque, las tres vistas, botón, ahorro de energía, estado compartido |
 | `main/weather_icon.c` | Iconos de clima de 30x30 px y rosa de los vientos |
 | `main/crab.c/.h` | Criatura pixel-art de 31x22: dos cuadros de caminata y dos de saludo |
 | `main/ble_sync.c/.h` | Servidor GATT con NimBLE (anuncio, conexión, escrituras) |
