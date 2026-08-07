@@ -1,0 +1,42 @@
+menu "Reloj 8 bits + Clima (BLE)"
+
+    config APP_BLE_NAME
+        string "Nombre BLE del dispositivo"
+        default "RELOJ8BIT"
+        help
+            Con este nombre aparece el reloj al buscarlo desde el celular.
+            Maximo 20 caracteres para que quepa en el paquete de anuncio.
+
+    config APP_BUTTON_GPIO
+        int "GPIO del boton que alterna las vistas"
+        default 0
+        help
+            0 = boton BOOT de la XIAO ESP32-S3 (a GND, con pull-up interno).
+            Si conectas un boton propio, tambien debe ir a GND.
+
+    config APP_I2C_SCL_GPIO
+        int "GPIO de SCL"
+        default 6
+        help
+            6 = pin D5 de la XIAO ESP32-S3 (SCL de fabrica).
+
+    config APP_I2C_SDA_GPIO
+        int "GPIO de SDA"
+        default 5
+        help
+            5 = pin D4 de la XIAO ESP32-S3 (SDA de fabrica).
+
+    config APP_OLED_ADDR
+        hex "Direccion I2C del OLED"
+        default 0x3C
+        help
+            0x3C en casi todos los modulos SSD1306; algunos usan 0x3D.
+
+    config APP_OLED_HEIGHT
+        int "Alto del panel en pixeles"
+        default 32
+        help
+            32 para el modulo de 0.91", 64 para los de 0.96" / 1.3".
+            El layout de la pantalla esta hecho para 128x32.
+
+endmenu

@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sincronizar RELOJ8BIT</title>
+<style>
+  :root { color-scheme: light dark; }
+  body {
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    max-width: 32rem; margin: 0 auto; padding: 1.5rem; line-height: 1.5;
+  }
+  h1 { font-size: 1.25rem; letter-spacing: .05em; }
+  button {
+    font: inherit; width: 100%; padding: .9rem; margin: .4rem 0;
+    border: 2px solid currentColor; border-radius: .4rem; background: transparent;
+    color: inherit; cursor: pointer;
+  }
+  button:disabled { opacity: .4; cursor: default; }
+  #log {
+    white-space: pre-wrap; font-size: .8rem; margin-top: 1rem;
+    padding: .75rem; border: 1px dashed currentColor; border-radius: .4rem;
+    min-height: 6rem; opacity: .85;
+  }
+</style>
+</head>
+<body>
+<h1>▓ SINCRONIZAR RELOJ8BIT</h1>
+
+<p>Enciende el reloj y conecta. Al conectar se envían solas la hora del teléfono y
+el clima de tu ubicación (Open-Meteo, sin API key).</p>
+
+<button id="connect">Conectar por Bluetooth</button>
+<button id="sync" disabled>Reenviar hora y clima</button>
+<button id="disconnect" disabled>Desconectar</button>
+
+<div id="log">Listo.</div>
+
+<script>
+const SVC  = '5c8b0001-7a2e-4f1d-9c3a-1b2d4e6f8a90';
+const CHR_TIME    = '5c8b0002-7a2e-4f1d-9c3a-1b2d4e6f8a90';
+const CHR_WEATHER = '5c8b0003-7a2e-4f1d-9c3a-1b2d4e6f8a90';
+
+const $ = id => document.getElementById(id);
+const log = msg => { $('log').textContent = msg + '\n' + $('log').textContent; };
+
+let device = null, chrTime = null, chrWeather = null;
+
+function setConnected(on) {
+  $('connect').disabled = on;
+  $('sync').disabled = !on;
+  $('disconnect').disabled = !on;
+}
+
+$('connect').onclick = async () => {
+  if (!navigator.bluetooth) {
+    log('✗ Este navegador no soporta Web Bluetooth. Usa Chrome en Android.');
+    return;
+  }
+  try {
+    log('Buscando el reloj…');
+    device = await navigator.bluetooth.requestDevice({
+      filters: [{ services: [SVC] }],
+      optionalServices: [SVC],
+    });
+    device.addEventListener('gattserverdisconnected', () => {
+      log('✗ Desconectado.');
+      setConnected(false);
+    });
+    const server  = await device.gatt.connect();
+    const service = await server.getPrimaryService(SVC);
+    chrTime    = await service.getCharacteristic(CHR_TIME);
+    chrWeather = await service.getCharacteristic(CHR_WEATHER);
+    setConnected(true);
+    log('✓ Conectado a ' + device.name);
+    await syncAll();          // sincroniza sola, sin esperar al boton
+  } catch (e) {
+    log('✗ ' + e.message);
+  }
+};
+
+$('disconnect').onclick = () => device?.gatt?.disconnect();
+
+async function sendTime() {
+  const now = new Date();
+  const epoch = Math.floor(now.getTime() / 1000);
+  // getTimezoneOffset() son minutos hacia UTC; el firmware quiere segundos desde UTC.
+  const offset = -now.getTimezoneOffset() * 60;
+
+  const buf = new DataView(new ArrayBuffer(8));
+  buf.setUint32(0, epoch, true);    // little-endian
+  buf.setInt32(4, offset, true);
+  await chrTime.writeValue(buf);
+  log('✓ Hora enviada: ' + now.toLocaleString());
+}
+
+function coords() {
+  return new Promise((resolve, reject) =>
+    navigator.geolocation.getCurrentPosition(
+      p => resolve({ lat: p.coords.latitude, lon: p.coords.longitude }),
+      e => reject(new Error('ubicación: ' + e.message)),
+      { timeout: 10000, maximumAge: 600000 }
+    ));
+}
+
+async function sendWeather() {
+  const { lat, lon } = await coords();
+  const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat.toFixed(4)}`
+            + `&longitude=${lon.toFixed(4)}`
+            + `&current=temperature_2m,relative_humidity_2m,weather_code`
+            + `,wind_speed_10m,wind_direction_10m`;
+  const r = await fetch(url);
+  if (!r.ok) throw new Error('Open-Meteo HTTP ' + r.status);
+  const c = (await r.json()).current;
+
+  const byte = v => Math.max(0, Math.min(255, Math.round(v ?? 0)));
+  const buf = new DataView(new ArrayBuffer(6));
+  buf.setInt16(0, Math.round(c.temperature_2m * 10), true);
+  buf.setUint8(2, byte(c.relative_humidity_2m));
+  buf.setUint8(3, byte(c.weather_code));
+  buf.setUint8(4, byte(c.wind_speed_10m));          // km/h
+  buf.setUint8(5, byte(c.wind_direction_10m / 2));  // grados / 2, para caber en un byte
+  await chrWeather.writeValue(buf);
+  log(`✓ Clima enviado: ${c.temperature_2m} °C, ${c.relative_humidity_2m} %, `
+    + `wmo ${c.weather_code}, viento ${c.wind_speed_10m} km/h ${c.wind_direction_10m}°`);
+}
+
+// Declaracion de funcion (no const): se puede llamar desde el handler de conexion,
+// que aparece antes en el archivo.
+async function syncAll() {
+  $('sync').disabled = true;
+  try {
+    await sendTime();
+    // El clima no debe tumbar la hora: si falla la ubicacion o la red, se avisa
+    // y ya se envio lo importante.
+    try {
+      await sendWeather();
+    } catch (e) {
+      log('✗ clima: ' + e.message);
+    }
+  } catch (e) {
+    log('✗ ' + e.message);
+  } finally {
+    $('sync').disabled = !device?.gatt?.connected;
+  }
+}
+
+$('sync').onclick = syncAll;
+</script>
+</body>
+</html>
