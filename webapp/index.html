@@ -3,49 +3,140 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Sincronizar RELOJ8BIT</title>
+<title>RELOJ8BIT</title>
 <style>
-  :root { color-scheme: light dark; }
+  :root {
+    color-scheme: light dark;
+    --fg: #14130e;
+    --dim: #77756c;
+    --line: #14130e;
+    --panel: #efeee7;
+    --paper: #faf9f4;
+    --acc: #c9663f;
+    --ok: #2d7a4c;
+    --err: #b8433a;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --fg: #eceae4;
+      --dim: #8b897f;
+      --line: #eceae4;
+      --panel: #1a1a19;
+      --paper: #0e0e0d;
+      --acc: #e08a67;
+      --ok: #6fc48f;
+      --err: #e58279;
+    }
+  }
+
+  * { box-sizing: border-box; }
+
   body {
-    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
-    max-width: 32rem; margin: 0 auto; padding: 1.5rem; line-height: 1.5;
+    margin: 0 auto;
+    max-width: 27rem;
+    padding: 1.75rem 1.1rem 3rem;
+    background: var(--paper);
+    color: var(--fg);
+    font-family: ui-monospace, "Cascadia Mono", "Segoe UI Mono", Menlo, Consolas, monospace;
+    font-size: 14px;
+    line-height: 1.6;
   }
-  h1 { font-size: 1.25rem; letter-spacing: .05em; }
+
+  h1 {
+    margin: 0 0 1.5rem;
+    font-size: 15px;
+    font-weight: 700;
+    letter-spacing: .3em;
+    color: var(--acc);
+  }
+
+  /* --- cabecera: el cangrejo es el indicador de estado --- */
+  header { display: flex; align-items: center; gap: 1rem; margin-bottom: 1.5rem; }
+  canvas { flex: none; image-rendering: pixelated; }
+  #estado {
+    font-size: 17px; font-weight: 700;
+    letter-spacing: .1em; text-transform: uppercase;
+  }
+  #desde { margin: .3rem 0 0; font-size: 12px; color: var(--dim); }
+
+  /* --- botones con sombra dura, sin curvas --- */
   button {
-    font: inherit; width: 100%; padding: .9rem; margin: .4rem 0;
-    border: 2px solid currentColor; border-radius: .4rem; background: transparent;
-    color: inherit; cursor: pointer;
+    font: inherit; font-weight: 700;
+    letter-spacing: .14em; text-transform: uppercase;
+    width: 100%; padding: .8rem; margin-bottom: .85rem;
+    border: 2px solid var(--line); border-radius: 0;
+    background: var(--acc); color: #14130e;
+    box-shadow: 4px 4px 0 var(--line);
+    cursor: pointer;
   }
-  button:disabled { opacity: .4; cursor: default; }
-  #log {
-    white-space: pre-wrap; font-size: .8rem; margin-top: 1rem;
-    padding: .75rem; border: 1px dashed currentColor; border-radius: .4rem;
-    min-height: 6rem; opacity: .85;
+  button.sec { background: transparent; color: var(--fg); }
+  button:active:not(:disabled) { transform: translate(4px, 4px); box-shadow: none; }
+  button:disabled {
+    opacity: .3; cursor: default;
+    box-shadow: 4px 4px 0 var(--dim); border-color: var(--dim);
   }
+
+  /* --- datos --- */
+  dl { margin: 1.75rem 0 0; }
+  .fila {
+    display: flex; justify-content: space-between; align-items: baseline;
+    gap: .75rem; padding: .45rem 0;
+    border-bottom: 2px dotted var(--line);
+  }
+  dt { font-size: 11px; letter-spacing: .16em; text-transform: uppercase; color: var(--dim); }
+  dd { margin: 0; font-size: 14px; font-weight: 700; text-align: right; }
+
+  /* --- consola --- */
+  h2 {
+    margin: 1.9rem 0 .55rem;
+    font-size: 11px; font-weight: 700;
+    letter-spacing: .2em; color: var(--dim);
+  }
+  #consola {
+    height: 11rem; overflow-y: auto;
+    padding: .65rem .75rem;
+    border: 2px solid var(--line); border-radius: 0;
+    background: var(--panel);
+    font-size: 11.5px; line-height: 1.8;
+  }
+  .ln { display: flex; gap: .55rem; }
+  .ln .h { flex: none; color: var(--dim); }
+  .ln .g { flex: none; width: 6ch; color: var(--dim); text-transform: uppercase; }
+  .ln .m { white-space: pre-wrap; word-break: break-word; }
+  .ln.ok  .g { color: var(--ok); }
+  .ln.err .g { color: var(--err); }
 </style>
 </head>
 <body>
-<h1>▓ SINCRONIZAR RELOJ8BIT</h1>
 
-<p>Enciende el reloj y conecta. Al conectar se envían solas la hora del teléfono y
-el clima de tu ubicación (Open-Meteo, sin API key).</p>
+<h1>RELOJ8BIT</h1>
 
-<p>Mientras esta pestaña siga abierta se reenvía la hora cada minuto y el clima
-cada 10 minutos, y si se pierde el enlace se reconecta solo.</p>
+<header>
+  <canvas id="crab" aria-hidden="true"></canvas>
+  <div>
+    <div id="estado">Desconectado</div>
+    <p id="desde">Conecta para poner el reloj en hora</p>
+  </div>
+</header>
 
-<button id="connect">Conectar por Bluetooth</button>
-<button id="sync" disabled>Reenviar hora y clima</button>
-<button id="disconnect" disabled>Desconectar</button>
+<button id="primario">Conectar</button>
+<button id="reenviar" class="sec" disabled>Reenviar ahora</button>
 
-<div id="log">Listo.</div>
+<dl>
+  <div class="fila"><dt>Hora</dt><dd id="vHora">--</dd></div>
+  <div class="fila"><dt>Temp</dt><dd id="vTemp">--</dd></div>
+  <div class="fila"><dt>Humedad</dt><dd id="vHum">--</dd></div>
+  <div class="fila"><dt>Viento</dt><dd id="vViento">--</dd></div>
+  <div class="fila"><dt>Cielo</dt><dd id="vCielo">--</dd></div>
+</dl>
+
+<h2>ESTADO DEL DISPOSITIVO</h2>
+<div id="consola" role="log" aria-live="polite"></div>
 
 <script>
 const SVC  = '5c8b0001-7a2e-4f1d-9c3a-1b2d4e6f8a90';
 const CHR_TIME    = '5c8b0002-7a2e-4f1d-9c3a-1b2d4e6f8a90';
 const CHR_WEATHER = '5c8b0003-7a2e-4f1d-9c3a-1b2d4e6f8a90';
-
-const $ = id => document.getElementById(id);
-const log = msg => { $('log').textContent = msg + '\n' + $('log').textContent; };
 
 // La hora se reenvía seguido porque corrige la deriva del oscilador del ESP32.
 // El clima no: Open-Meteo actualiza cada 15 min, pedirlo más seguido no aporta.
@@ -54,27 +145,220 @@ const PERIODO_CLIMA_MS = 10 * 60 * 1000;
 const RECONEXION_MIN_MS = 2000;
 const RECONEXION_MAX_MS = 30000;
 
+const $ = id => document.getElementById(id);
+
 let device = null, chrTime = null, chrWeather = null;
 let desconexionManual = false;
 let timers = [];
 let esperaReconexion = RECONEXION_MIN_MS;
 let reconexionActiva = false;
+let ultimaSync = null;
 
-function setConnected(on) {
-  $('connect').disabled = on;
-  $('sync').disabled = !on;
-  $('disconnect').disabled = !on;
+/* ------------------------------------------------------------- cangrejo */
+
+// Los mismos cuadros que main/crab.c: 31x22, dos de caminata y dos de saludo.
+// Caminando = el enlace está trabajando; saludando (ojos "<" ">") = conectado.
+const CRAB_CAMINA = [[
+  "....#######################....",
+  "....#######################....",
+  "....#######################....",
+  "....#######################....",
+  "....###...###########...###....",
+  "#######...###########...#######",
+  "#######...###########...#######",
+  "###############################",
+  "###############################",
+  "###############################",
+  "###############################",
+  "###############################",
+  "....#######################....",
+  "....#######################....",
+  "....#######################....",
+  "....#######################....",
+  ".....###..###.....###..###.....",
+  ".....###..###.....###..###.....",
+  ".....###..###.....###..###.....",
+  ".....###..###.....###..###.....",
+  ".....###..........###..........",
+  ".....###..........###..........",
+], [
+  "....#######################....",
+  "....#######################....",
+  "....#######################....",
+  "....#######################....",
+  "....###...###########...###....",
+  "#######...###########...#######",
+  "#######...###########...#######",
+  "###############################",
+  "###############################",
+  "###############################",
+  "###############################",
+  "###############################",
+  "....#######################....",
+  "....#######################....",
+  "....#######################....",
+  "....#######################....",
+  ".....###..###.....###..###.....",
+  ".....###..###.....###..###.....",
+  ".....###..###.....###..###.....",
+  ".....###..###.....###..###.....",
+  "..........###..........###.....",
+  "..........###..........###.....",
+]];
+
+const CRAB_SALUDA = [[
+  "....###########################",
+  "....###########################",
+  "....###########################",
+  "....####..###########..########",
+  "....###..#############..#######",
+  "######..###############..######",
+  "#######..#############..#######",
+  "########..###########..####....",
+  "###########################....",
+  "###########################....",
+  "###########################....",
+  "###########################....",
+  "....#######################....",
+  "....#######################....",
+  "....#######################....",
+  "....#######################....",
+  ".....###..###.....###..###.....",
+  ".....###..###.....###..###.....",
+  ".....###..###.....###..###.....",
+  ".....###..###.....###..###.....",
+  ".....###..###.....###..###.....",
+  ".....###..###.....###..###.....",
+], [
+  "....#######################....",
+  "....#######################....",
+  "....###########################",
+  "....####..###########..########",
+  "....###..#############..#######",
+  "######..###############..######",
+  "#######..#############..#######",
+  "########..###########..########",
+  "###############################",
+  "###########################....",
+  "###########################....",
+  "###########################....",
+  "....#######################....",
+  "....#######################....",
+  "....#######################....",
+  "....#######################....",
+  ".....###..###.....###..###.....",
+  ".....###..###.....###..###.....",
+  ".....###..###.....###..###.....",
+  ".....###..###.....###..###.....",
+  ".....###..###.....###..###.....",
+  ".....###..###.....###..###.....",
+]];
+
+const CRAB_W = 31, CRAB_H = 22, PX = 3;
+const cv = $('crab'), ctx2d = cv.getContext('2d');
+cv.width = CRAB_W * PX;
+cv.height = CRAB_H * PX;
+cv.style.width = cv.width + 'px';
+cv.style.height = cv.height + 'px';
+
+let cuadros = CRAB_CAMINA, animado = false, tick = 0;
+
+function pintarCangrejo() {
+  const f = cuadros[animado ? tick % cuadros.length : 0];
+  ctx2d.clearRect(0, 0, cv.width, cv.height);
+  ctx2d.fillStyle = getComputedStyle(document.body).getPropertyValue('--acc').trim() || '#c9663f';
+  for (let r = 0; r < CRAB_H; r++) {
+    for (let c = 0; c < CRAB_W; c++) {
+      if (f[r][c] === '#') ctx2d.fillRect(c * PX, r * PX, PX, PX);
+    }
+  }
+}
+setInterval(() => { if (animado) { tick++; pintarCangrejo(); } }, 260);
+
+/* ------------------------------------------------------------- consola */
+
+// Se construye con nodos y textContent, nunca innerHTML: los mensajes traen
+// texto de excepciones del navegador y no hay que interpretarlo como markup.
+function log(grupo, mensaje, clase = '') {
+  const ln = document.createElement('div');
+  ln.className = 'ln ' + clase;
+
+  const h = document.createElement('span');
+  h.className = 'h';
+  h.textContent = new Date().toTimeString().slice(0, 8);
+
+  const g = document.createElement('span');
+  g.className = 'g';
+  g.textContent = grupo;
+
+  const m = document.createElement('span');
+  m.className = 'm';
+  m.textContent = mensaje;
+
+  ln.append(h, g, m);
+  $('consola').append(ln);
+  $('consola').scrollTop = $('consola').scrollHeight;
 }
 
+/* -------------------------------------------------------------- estado */
+
 const conectado = () => device?.gatt?.connected === true;
+
+// clase: 'on' conectado, 'wait' trabajando, '' inactivo.
+function setEstado(texto, clase) {
+  $('estado').textContent = texto;
+
+  cuadros = clase === 'on' ? CRAB_SALUDA : CRAB_CAMINA;
+  animado = clase !== '';
+  tick = 0;
+  pintarCangrejo();
+
+  const listo = conectado();
+  $('reenviar').disabled = !listo;
+  if (listo) {
+    $('primario').textContent = 'Desconectar';
+    $('primario').disabled = false;
+  } else if (reconexionActiva) {
+    $('primario').textContent = 'Cancelar';
+    $('primario').disabled = false;
+  } else {
+    $('primario').textContent = 'Conectar';
+    $('primario').disabled = clase === 'wait';
+  }
+}
+
+function refrescarDesde() {
+  if (!ultimaSync) return;
+  const s = Math.round((Date.now() - ultimaSync) / 1000);
+  const txt = s < 60 ? `hace ${s} s`
+            : s < 3600 ? `hace ${Math.floor(s / 60)} min`
+            : `hace ${Math.floor(s / 3600)} h`;
+  $('desde').textContent = 'Sincronizado ' + txt;
+}
+setInterval(refrescarDesde, 1000);
+
+const CIELO = {
+  0: 'Despejado', 1: 'Casi claro', 2: 'Parc nublado', 3: 'Nublado',
+  45: 'Niebla', 48: 'Niebla', 51: 'Llovizna', 53: 'Llovizna', 55: 'Llovizna',
+  56: 'Llov helada', 57: 'Llov helada', 61: 'Lluvia', 63: 'Lluvia',
+  65: 'Lluvia fuerte', 66: 'Lluvia helada', 67: 'Lluvia helada',
+  71: 'Nieve', 73: 'Nieve', 75: 'Nieve', 77: 'Nieve',
+  80: 'Chubascos', 81: 'Chubascos', 82: 'Aguacero',
+  85: 'Nevadas', 86: 'Nevadas', 95: 'Tormenta', 96: 'Tormenta', 99: 'Tormenta',
+};
+
+const RUMBOS = ['N','NNE','NE','ENE','E','ESE','SE','SSE','S','SSO','SO','OSO','O','ONO','NO','NNO'];
+const rumbo = g => RUMBOS[Math.round(g / 22.5) % 16];
+
+/* --------------------------------------------------------------- enlace */
 
 function arrancarTimers() {
   pararTimers();
   timers.push(setInterval(() => {
-    if (conectado()) sendTime().catch(e => log('✗ hora: ' + e.message));
+    if (conectado()) sendTime().catch(e => log('err', 'hora: ' + e.message, 'err'));
   }, PERIODO_HORA_MS));
   timers.push(setInterval(() => {
-    if (conectado()) sendWeather().catch(e => log('✗ clima: ' + e.message));
+    if (conectado()) sendWeather().catch(e => log('err', 'clima: ' + e.message, 'err'));
   }, PERIODO_CLIMA_MS));
 }
 
@@ -91,9 +375,10 @@ async function abrirGatt(etiqueta) {
   const service = await server.getPrimaryService(SVC);
   chrTime    = await service.getCharacteristic(CHR_TIME);
   chrWeather = await service.getCharacteristic(CHR_WEATHER);
-  setConnected(true);
+
   esperaReconexion = RECONEXION_MIN_MS;
-  log(`✓ ${etiqueta} a ${device.name}`);
+  setEstado('Conectado', 'on');
+  log('gatt', `${etiqueta} a ${device.name}`, 'ok');
   arrancarTimers();
   await syncAll();
 }
@@ -113,13 +398,13 @@ function reintentar() {
       return;
     }
     try {
-      await abrirGatt('Reconectado');
+      await abrirGatt('reconectado');
       reconexionActiva = false;
     } catch (e) {
       // Backoff exponencial: si el reloj está apagado o fuera de alcance, no
       // tiene sentido insistir cada 2 s indefinidamente.
       esperaReconexion = Math.min(esperaReconexion * 2, RECONEXION_MAX_MS);
-      log(`… sin respuesta, reintento en ${esperaReconexion / 1000} s`);
+      log('gatt', `sin respuesta, reintento en ${esperaReconexion / 1000} s`);
       // Si el enlace quedó abierto pero el servicio no se pudo leer, hay que
       // cerrarlo: el handler de desconexión reprograma la cadena.
       if (conectado()) {
@@ -134,44 +419,59 @@ function reintentar() {
 
 function alDesconectar() {
   pararTimers();
-  setConnected(false);
   if (desconexionManual) {
-    log('✗ Desconectado.');
+    setEstado('Desconectado', '');
+    log('gatt', 'desconectado por el usuario');
     return;
   }
-  log('✗ Enlace perdido, reconectando…');
+  log('gatt', 'enlace perdido', 'err');
   programarReconexion();
+  setEstado('Reconectando', 'wait');
 }
 
-$('connect').onclick = async () => {
+async function conectar() {
   if (!navigator.bluetooth) {
-    log('✗ Este navegador no soporta Web Bluetooth. Usa Chrome en Android.');
+    log('err', 'este navegador no soporta web bluetooth, usa chrome en android', 'err');
+    setEstado('No disponible', '');
     return;
   }
   try {
-    log('Buscando el reloj…');
+    setEstado('Buscando', 'wait');
+    log('sys', 'buscando dispositivos con el servicio del reloj');
     device = await navigator.bluetooth.requestDevice({
       filters: [{ services: [SVC] }],
       optionalServices: [SVC],
     });
     device.addEventListener('gattserverdisconnected', alDesconectar);
     desconexionManual = false;
-    await abrirGatt('Conectado');
+    setEstado('Conectando', 'wait');
+    await abrirGatt('conectado');
   } catch (e) {
-    log('✗ ' + e.message);
-    // Mismo caso que arriba: enlace abierto pero servicio ilegible.
+    log('err', e.message, 'err');
+    setEstado('Desconectado', '');
+    // Enlace abierto pero servicio ilegible: cerrarlo para no quedar a medias.
     if (conectado()) device.gatt.disconnect();
   }
-};
+}
 
-$('disconnect').onclick = () => {
-  desconexionManual = true;   // corta el ciclo de reintentos
+function desconectar() {
+  desconexionManual = true;
+  reconexionActiva = false;
   pararTimers();
-  device?.gatt?.disconnect();
-};
+  if (conectado()) {
+    device.gatt.disconnect();
+  } else {
+    setEstado('Desconectado', '');
+    log('sys', 'reconexion cancelada');
+  }
+}
+
+$('primario').onclick = () => (conectado() || reconexionActiva ? desconectar() : conectar());
+
+/* ----------------------------------------------------------- protocolo */
 
 async function sendTime() {
-  if (!chrTime || !conectado()) throw new Error('sin conexión');
+  if (!chrTime || !conectado()) throw new Error('sin conexion');
   const now = new Date();
   const epoch = Math.floor(now.getTime() / 1000);
   // getTimezoneOffset() son minutos hacia UTC; el firmware quiere segundos desde UTC.
@@ -181,27 +481,34 @@ async function sendTime() {
   buf.setUint32(0, epoch, true);    // little-endian
   buf.setInt32(4, offset, true);
   await chrTime.writeValue(buf);
-  log('✓ Hora enviada: ' + now.toLocaleString());
+
+  const h = Math.trunc(offset / 3600);
+  $('vHora').textContent = now.toLocaleTimeString();
+  ultimaSync = Date.now();
+  refrescarDesde();
+  log('hora', `enviada epoch=${epoch} utc${h >= 0 ? '+' : ''}${h}`, 'ok');
 }
 
 function coords() {
   return new Promise((resolve, reject) =>
     navigator.geolocation.getCurrentPosition(
       p => resolve({ lat: p.coords.latitude, lon: p.coords.longitude }),
-      e => reject(new Error('ubicación: ' + e.message)),
+      e => reject(new Error('ubicacion: ' + e.message)),
       { timeout: 10000, maximumAge: 600000 }
     ));
 }
 
 async function sendWeather() {
-  if (!chrWeather || !conectado()) throw new Error('sin conexión');
+  if (!chrWeather || !conectado()) throw new Error('sin conexion');
   const { lat, lon } = await coords();
+  log('clima', `consultando open-meteo ${lat.toFixed(3)},${lon.toFixed(3)}`);
+
   const url = `https://api.open-meteo.com/v1/forecast?latitude=${lat.toFixed(4)}`
             + `&longitude=${lon.toFixed(4)}`
             + `&current=temperature_2m,relative_humidity_2m,weather_code`
             + `,wind_speed_10m,wind_direction_10m`;
   const r = await fetch(url);
-  if (!r.ok) throw new Error('Open-Meteo HTTP ' + r.status);
+  if (!r.ok) throw new Error('open-meteo HTTP ' + r.status);
   const c = (await r.json()).current;
 
   const byte = v => Math.max(0, Math.min(255, Math.round(v ?? 0)));
@@ -212,31 +519,42 @@ async function sendWeather() {
   buf.setUint8(4, byte(c.wind_speed_10m));          // km/h
   buf.setUint8(5, byte(c.wind_direction_10m / 2));  // grados / 2, para caber en un byte
   await chrWeather.writeValue(buf);
-  log(`✓ Clima enviado: ${c.temperature_2m} °C, ${c.relative_humidity_2m} %, `
-    + `wmo ${c.weather_code}, viento ${c.wind_speed_10m} km/h ${c.wind_direction_10m}°`);
+
+  $('vTemp').textContent   = `${c.temperature_2m} °C`;
+  $('vHum').textContent    = `${c.relative_humidity_2m} %`;
+  $('vViento').textContent = `${Math.round(c.wind_speed_10m)} km/h ${rumbo(c.wind_direction_10m)}`;
+  $('vCielo').textContent  = CIELO[c.weather_code] ?? `wmo ${c.weather_code}`;
+  ultimaSync = Date.now();
+  refrescarDesde();
+
+  log('clima', `enviado ${c.temperature_2m}C ${c.relative_humidity_2m}% `
+            + `wmo=${c.weather_code} viento=${Math.round(c.wind_speed_10m)}km/h@${c.wind_direction_10m}`, 'ok');
 }
 
-// Declaracion de funcion (no const): se puede llamar desde el handler de conexion,
-// que aparece antes en el archivo.
 async function syncAll() {
-  $('sync').disabled = true;
+  $('reenviar').disabled = true;
+  setEstado('Sincronizando', 'wait');
   try {
     await sendTime();
-    // El clima no debe tumbar la hora: si falla la ubicacion o la red, se avisa
-    // y ya se envio lo importante.
+    // El clima no debe tumbar la hora: si falla la ubicación o la red, se avisa
+    // y ya se envió lo importante.
     try {
       await sendWeather();
     } catch (e) {
-      log('✗ clima: ' + e.message);
+      log('err', 'clima: ' + e.message, 'err');
     }
   } catch (e) {
-    log('✗ ' + e.message);
+    log('err', e.message, 'err');
   } finally {
-    $('sync').disabled = !device?.gatt?.connected;
+    if (conectado()) setEstado('Conectado', 'on');
+    else setEstado('Desconectado', '');
   }
 }
 
-$('sync').onclick = syncAll;
+$('reenviar').onclick = syncAll;
+
+pintarCangrejo();
+log('sys', 'listo, esperando conexion');
 </script>
 </body>
 </html>

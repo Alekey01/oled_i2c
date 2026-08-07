@@ -9,12 +9,13 @@ menu "Reloj 8 bits + Clima (BLE)"
 
     config APP_SCREEN_TIMEOUT_S
         int "Segundos de inactividad antes de apagar el OLED"
-        default 300
+        default 0
         range 0 3600
         help
-            El panel se apaga solo y vuelve al presionar el boton. Con la
-            pantalla apagada el reloj sigue contando y recibiendo por BLE.
-            0 = nunca apagar.
+            0 = la pantalla nunca se apaga.
+            Con cualquier otro valor el panel se apaga solo tras ese tiempo sin
+            tocar el boton, y vuelve al presionarlo. Con la pantalla apagada el
+            reloj sigue contando y recibiendo por BLE.
 
     config APP_LIGHT_SLEEP
         bool "Light sleep automatico"

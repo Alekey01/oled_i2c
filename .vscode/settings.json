@@ -9,5 +9,5 @@
     "IDF_TARGET": "esp32s3"
   },
   "idf.portWin": "COM25",
-  "idf.flashType": "JTAG"
+  "idf.flashType": "UART"
 }

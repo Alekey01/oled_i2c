@@ -30,7 +30,7 @@ Pensado para funcionar con LiPo:
 | Light sleep automático | CPU a 80 MHz (mínimo 40) y el chip duerme entre eventos |
 | Botón por interrupción | Antes se sondeaba cada 20 ms, lo que despertaba el CPU 50 veces/s |
 | Refresco a 1 Hz alineado al segundo | Antes 4 Hz; solo el segundero binario cambia a esa velocidad |
-| OLED se apaga a los 5 min | Vuelve con el botón; el reloj sigue contando y recibiendo por BLE |
+| Apagado del OLED por inactividad | Desactivado por defecto (`APP_SCREEN_TIMEOUT_S=0`). Ponle segundos para activarlo |
 | Anuncio BLE a 500–1000 ms | Por defecto va a ~30 ms |
 | Conexión BLE a 300 ms con latencia 4 | El radio despierta como mucho cada 1.5 s |
 
@@ -42,8 +42,8 @@ duerme, así que el ahorro es bueno pero no tan profundo como con un 32 kHz.
 > Con el light sleep activo la consola USB no es confiable. Para depurar,
 > desactiva `APP_LIGHT_SLEEP` en `menuconfig`.
 
-En la vista del cangrejo el refresco sube a 80 ms: es la vista más cara, pero se
-apaga sola a los 5 min como las demás.
+En la vista del cangrejo el refresco sube a 80 ms: es la vista más cara en CPU y
+en bus I2C.
 
 ## Conexiones
 
@@ -71,6 +71,11 @@ Ajustes opcionales (nombre BLE, GPIOs, dirección y alto del panel) en
 `webapp/index.html` es una página con Web Bluetooth: lee la hora del teléfono,
 pide el clima de tu ubicación a [Open-Meteo](https://open-meteo.com) y lo escribe
 por BLE. No hay que instalar nada.
+
+El indicador de estado es el mismo cangrejo del firmware, dibujado en un canvas
+con los sprites idénticos a `main/crab.c`: camina mientras el enlace trabaja y
+saluda con la cara feliz cuando está conectado. Abajo hay una consola con el
+detalle de cada operación.
 
 > **Requiere Chrome en Android.** Web Bluetooth no existe en Safari/iOS, y la
 > página **debe servirse por HTTPS o desde localhost** — abrirla con `file://`
