@@ -9,6 +9,7 @@
 #include "services/gatt/ble_svc_gatt.h"
 
 #include "ble_sync.h"
+#include "ota.h"
 
 static const char *TAG = "ble_sync";
 
@@ -20,13 +21,137 @@ static const char *TAG = "ble_sync";
 static const ble_uuid128_t svc_uuid     = UUID128_APP(0x01, 0x00);
 static const ble_uuid128_t chr_time     = UUID128_APP(0x02, 0x00);
 static const ble_uuid128_t chr_weather  = UUID128_APP(0x03, 0x00);
+static const ble_uuid128_t chr_ota_ctrl = UUID128_APP(0x04, 0x00);
+static const ble_uuid128_t chr_ota_data = UUID128_APP(0x05, 0x00);
+
+/* Ordenes que acepta la caracteristica de control del OTA. */
+#define OTA_CMD_START  0x01   /* + uint32 tamano */
+#define OTA_CMD_END    0x02
+#define OTA_CMD_ABORT  0x03
+
+/* Estados que devuelve por notificacion. */
+#define OTA_EST_LISTO     0x01
+#define OTA_EST_PROGRESO  0x02
+#define OTA_EST_OK        0x03
+#define OTA_EST_ERROR     0x04
+
+/* Cada cuantos bytes avisa del avance. Notificar por paquete saturaria el
+   enlace justo cuando lo estamos usando al maximo. */
+#define OTA_AVISO_CADA (16 * 1024)
+
+/* Cota del trozo de datos: con MTU de 517 el celular puede mandar 512 utiles. */
+#define OTA_CHUNK_MAX 512
 
 static ble_sync_cb_t s_cb;
 static uint8_t s_addr_type;
 static const char *s_name;
 static volatile bool s_connected;
+static uint16_t s_conn = BLE_HS_CONN_HANDLE_NONE;
+static uint16_t s_ota_ctrl_handle;
+static uint32_t s_ota_ultimo_aviso;
 
 static void advertise(void);
+
+/* ------------------------------------------------------------------- OTA */
+
+/*
+ * Durante la transferencia hace falta el enlace rapido: con los 300 ms y la
+ * latencia 4 del funcionamiento normal, medio mega tardaria horas. Al terminar
+ * se vuelve al modo lento, que es el que hace que la bateria dure.
+ */
+static void pedir_conexion(bool rapida)
+{
+    if (s_conn == BLE_HS_CONN_HANDLE_NONE) {
+        return;
+    }
+
+    struct ble_gap_upd_params p;
+    if (rapida) {
+        p = (struct ble_gap_upd_params){
+            .itvl_min = 12,               /* 15 ms */
+            .itvl_max = 24,               /* 30 ms */
+            .latency = 0,
+            .supervision_timeout = 400,   /* 4 s */
+        };
+    } else {
+        p = (struct ble_gap_upd_params){
+            .itvl_min = 80,               /* 100 ms */
+            .itvl_max = 240,              /* 300 ms */
+            .latency = 4,
+            .supervision_timeout = 600,   /* 6 s */
+        };
+    }
+
+    int rc = ble_gap_update_params(s_conn, &p);
+    if (rc != 0) {
+        ESP_LOGW(TAG, "no se pudo cambiar el intervalo a %s: %d",
+                 rapida ? "rapido" : "lento", rc);
+    }
+}
+
+/* Notificacion de 6 bytes: estado, bytes recibidos (uint32 LE) y codigo de error. */
+static void notificar_ota(uint8_t estado, uint8_t err)
+{
+    if (s_conn == BLE_HS_CONN_HANDLE_NONE || s_ota_ctrl_handle == 0) {
+        return;
+    }
+
+    ota_estado_t e;
+    ota_estado(&e);
+
+    uint8_t p[6];
+    p[0] = estado;
+    memcpy(&p[1], &e.recibido, 4);
+    p[5] = err;
+
+    struct os_mbuf *om = ble_hs_mbuf_from_flat(p, sizeof(p));
+    if (om != NULL) {
+        ble_gatts_notify_custom(s_conn, s_ota_ctrl_handle, om);
+    }
+}
+
+static int ota_ctrl_write(const uint8_t *buf, uint16_t len)
+{
+    if (len < 1) {
+        return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
+    }
+
+    switch (buf[0]) {
+    case OTA_CMD_START: {
+        if (len != 5) {
+            return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
+        }
+        uint32_t tamano;
+        memcpy(&tamano, &buf[1], 4);
+        s_ota_ultimo_aviso = 0;
+
+        esp_err_t err = ota_begin(tamano);
+        if (err != ESP_OK) {
+            notificar_ota(OTA_EST_ERROR, 1);
+            return BLE_ATT_ERR_UNLIKELY;
+        }
+        pedir_conexion(true);
+        notificar_ota(OTA_EST_LISTO, 0);
+        return 0;
+    }
+
+    case OTA_CMD_END: {
+        esp_err_t err = ota_end();
+        pedir_conexion(false);
+        notificar_ota(err == ESP_OK ? OTA_EST_OK : OTA_EST_ERROR, err == ESP_OK ? 0 : 2);
+        return err == ESP_OK ? 0 : BLE_ATT_ERR_UNLIKELY;
+    }
+
+    case OTA_CMD_ABORT:
+        ota_abort();
+        pedir_conexion(false);
+        notificar_ota(OTA_EST_ERROR, 3);
+        return 0;
+
+    default:
+        return BLE_ATT_ERR_UNLIKELY;
+    }
+}
 
 /* ------------------------------------------------------------------ GATT */
 
@@ -36,11 +161,42 @@ static int chr_write(uint16_t conn, uint16_t attr, struct ble_gatt_access_ctxt *
         return BLE_ATT_ERR_UNLIKELY;
     }
 
+    /*
+     * Los trozos del OTA se atienden aparte porque no caben en el buffer de 16
+     * bytes que basta para hora y clima. El buffer es estatico y no de pila:
+     * medio kilobyte dentro de la tarea del host BLE es demasiado, y como el
+     * callback siempre corre en esa misma tarea no hay concurrencia que cuidar.
+     */
+    if (ble_uuid_cmp(ctxt->chr->uuid, &chr_ota_data.u) == 0) {
+        static uint8_t datos[OTA_CHUNK_MAX];
+        uint16_t len = 0;
+        if (ble_hs_mbuf_to_flat(ctxt->om, datos, sizeof(datos), &len) != 0) {
+            return BLE_ATT_ERR_UNLIKELY;
+        }
+        if (ota_write(datos, len) != ESP_OK) {
+            pedir_conexion(false);
+            notificar_ota(OTA_EST_ERROR, 4);
+            return BLE_ATT_ERR_UNLIKELY;
+        }
+
+        ota_estado_t e;
+        ota_estado(&e);
+        if (e.recibido - s_ota_ultimo_aviso >= OTA_AVISO_CADA) {
+            s_ota_ultimo_aviso = e.recibido;
+            notificar_ota(OTA_EST_PROGRESO, 0);
+        }
+        return 0;
+    }
+
     uint8_t buf[16];
     uint16_t len = 0;
     int rc = ble_hs_mbuf_to_flat(ctxt->om, buf, sizeof(buf), &len);
     if (rc != 0) {
         return BLE_ATT_ERR_UNLIKELY;
+    }
+
+    if (ble_uuid_cmp(ctxt->chr->uuid, &chr_ota_ctrl.u) == 0) {
+        return ota_ctrl_write(buf, len);
     }
 
     if (ble_uuid_cmp(ctxt->chr->uuid, &chr_time.u) == 0) {
@@ -107,6 +263,20 @@ static const struct ble_gatt_svc_def gatt_svcs[] = {
                 .access_cb = chr_write,
                 .flags = BLE_GATT_CHR_F_WRITE,
             },
+            {
+                /* Control del OTA: ordenes con respuesta, avance por notificacion. */
+                .uuid = &chr_ota_ctrl.u,
+                .access_cb = chr_write,
+                .val_handle = &s_ota_ctrl_handle,
+                .flags = BLE_GATT_CHR_F_WRITE | BLE_GATT_CHR_F_NOTIFY,
+            },
+            {
+                /* Datos del OTA: sin respuesta, que es lo que lo hace rapido.
+                   La perdida de un paquete la detecta la cuenta final. */
+                .uuid = &chr_ota_data.u,
+                .access_cb = chr_write,
+                .flags = BLE_GATT_CHR_F_WRITE_NO_RSP,
+            },
             {0},
         },
     },
@@ -125,6 +295,7 @@ static int gap_event(struct ble_gap_event *event, void *arg)
             advertise();
             break;
         }
+        s_conn = event->connect.conn_handle;
         /*
          * Los datos llegan cada 60 s, asi que no hace falta latencia de 30 ms.
          * Con intervalo de 300 ms y latencia 4, el radio puede saltarse hasta 4
@@ -150,6 +321,10 @@ static int gap_event(struct ble_gap_event *event, void *arg)
     case BLE_GAP_EVENT_DISCONNECT:
         ESP_LOGI(TAG, "desconectado (razon 0x%02x)", event->disconnect.reason);
         s_connected = false;
+        s_conn = BLE_HS_CONN_HANDLE_NONE;
+        /* Si el enlace se cae a media actualizacion hay que soltar la ranura:
+           la que esta corriendo no se toco, asi que el reloj sigue igual. */
+        ota_abort();
         advertise();
         break;
 

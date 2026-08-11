@@ -125,6 +125,40 @@ def mostrar(filas, titulo):
     for f in filas:
         print('  ' + f.replace('#', '█').replace('.', ' '))
 
+# --- accesorios: mismo arte que dibujar_accesorio() en bitcat.c ----------------
+# Cada entrada es una lista de estampas (dx, dy, filas) relativas al sprite.
+ACC_PARAGUAS = ['..##..', '.####.', '######']
+ACC_LENTES   = ['#####..#####', '############', '.####..####.', '..###..###..']
+ACC_RAYAS    = ['###', '', '', '###', '', '', '###']
+ACC_Z        = ['###', '.#.', '###']
+
+ACCESORIOS = {
+    'NINGUNO':  [],
+    'PARAGUAS': [(25, 0, ACC_PARAGUAS)],
+    'LENTES':   [(9, 6, ACC_LENTES)],
+    'FRIO':     [(1, 6, ACC_RAYAS), (27, 6, ACC_RAYAS)],
+    'ZZZ':      [(26, 4, ACC_Z), (28, 0, ACC_Z)],
+}
+
+# El tiritar se sale de la caja del sprite, asi que la vista previa lleva margen.
+MARGEN = 4
+
+def con_accesorio(filas, acc):
+    """Devuelve el sprite con margen lateral y el accesorio encima."""
+    out = [['.'] * (W + 2 * MARGEN) for _ in range(H)]
+    for r in range(H):
+        for c in range(W):
+            out[r][MARGEN + c] = filas[r][c]
+    for dx, dy, estampa in ACCESORIOS[acc]:
+        for r, fila in enumerate(estampa):
+            for c, ch in enumerate(fila):
+                if ch != '#':
+                    continue
+                y, x = dy + r, MARGEN + dx + c
+                if 0 <= y < H and 0 <= x < W + 2 * MARGEN:
+                    out[y][x] = '#'
+    return [''.join(f) for f in out]
+
 ORDEN_POSES = ['SIT', 'WALK_A', 'WALK_B', 'WAVE_A', 'WAVE_B']
 ORDEN_EXPR  = ['NORMAL', 'FELIZ', 'SORPRESA', 'DORMIDO', 'ENOJADO', 'AMOR']
 
@@ -174,3 +208,10 @@ if __name__ == '__main__':
             mostrar(estampar(POSES[p], 'NORMAL'), p)
         for e in ORDEN_EXPR:
             mostrar(estampar(POSES['SIT'], e)[3:15], 'CARA ' + e)
+        # Cada accesorio con la pose y expresion con que lo usa el firmware.
+        for acc, pose, expr in [('PARAGUAS', 'WAVE_A', 'NORMAL'),
+                                ('LENTES',   'SIT',    'FELIZ'),
+                                ('FRIO',     'SIT',    'ENOJADO'),
+                                ('ZZZ',      'SIT',    'DORMIDO')]:
+            mostrar(con_accesorio(estampar(POSES[pose], expr), acc),
+                    'ACC %s (%s / %s)' % (acc, pose, expr))

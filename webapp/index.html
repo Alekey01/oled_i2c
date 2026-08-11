@@ -100,6 +100,30 @@
   dt { font-size: 11px; letter-spacing: .16em; text-transform: uppercase; color: var(--dim); }
   dd { margin: 0; font-size: 14px; font-weight: 700; text-align: right; }
 
+  /* --- firmware --- */
+  input[type=file] {
+    display: block; width: 100%; margin-bottom: .85rem;
+    padding: .55rem;
+    border: 2px dashed var(--line); border-radius: 0;
+    background: transparent; color: var(--dim);
+    font: inherit; font-size: 11.5px;
+  }
+  input[type=file]::file-selector-button {
+    font: inherit; font-size: 11px; font-weight: 700;
+    letter-spacing: .1em; text-transform: uppercase;
+    margin-right: .6rem; padding: .3rem .6rem;
+    border: 2px solid var(--line); border-radius: 0;
+    background: transparent; color: var(--fg);
+    cursor: pointer;
+  }
+  #progreso {
+    height: 16px; margin-bottom: .85rem;
+    border: 2px solid var(--line);
+    background: var(--panel);
+  }
+  #progreso[hidden] { display: none; }
+  #barra { height: 100%; width: 0; background: var(--acc); }
+
   /* --- consola --- */
   h2 {
     margin: 1.9rem 0 .55rem;
@@ -145,13 +169,29 @@
   <div class="fila"><dt>Cielo</dt><dd id="vCielo">--</dd></div>
 </dl>
 
+<h2>FIRMWARE</h2>
+<input type="file" id="archivo" accept=".bin" disabled>
+<div id="progreso" hidden><div id="barra"></div></div>
+<button id="actualizar" class="sec" disabled>Actualizar reloj</button>
+
 <h2>ESTADO DEL DISPOSITIVO</h2>
 <div id="consola" role="log" aria-live="polite"></div>
 
 <script>
 const SVC  = '5c8b0001-7a2e-4f1d-9c3a-1b2d4e6f8a90';
-const CHR_TIME    = '5c8b0002-7a2e-4f1d-9c3a-1b2d4e6f8a90';
-const CHR_WEATHER = '5c8b0003-7a2e-4f1d-9c3a-1b2d4e6f8a90';
+const CHR_TIME     = '5c8b0002-7a2e-4f1d-9c3a-1b2d4e6f8a90';
+const CHR_WEATHER  = '5c8b0003-7a2e-4f1d-9c3a-1b2d4e6f8a90';
+const CHR_OTA_CTRL = '5c8b0004-7a2e-4f1d-9c3a-1b2d4e6f8a90';
+const CHR_OTA_DATA = '5c8b0005-7a2e-4f1d-9c3a-1b2d4e6f8a90';
+
+// Ordenes y estados del OTA, iguales a los de main/ble_sync.c.
+const OTA_START = 1, OTA_END = 2, OTA_ABORT = 3;
+const OTA_LISTO = 1, OTA_PROGRESO = 2, OTA_OK = 3, OTA_ERROR = 4;
+
+// Web Bluetooth no expone el MTU negociado, asi que se prueba el trozo grande y
+// se va partiendo a la mitad hasta que el navegador lo acepte.
+const OTA_CHUNK_MAX = 512;
+const OTA_CHUNK_MIN = 20;
 
 // La hora se reenvía seguido porque corrige la deriva del oscilador del ESP32.
 // El clima no: Open-Meteo actualiza cada 15 min, pedirlo más seguido no aporta.
@@ -163,6 +203,8 @@ const RECONEXION_MAX_MS = 30000;
 const $ = id => document.getElementById(id);
 
 let device = null, chrTime = null, chrWeather = null;
+let chrOtaCtrl = null, chrOtaData = null;
+let otaEnCurso = false;
 let desconexionManual = false;
 let timers = [];
 let esperaReconexion = RECONEXION_MIN_MS;
@@ -337,7 +379,8 @@ function setEstado(texto, clase) {
   pintarGato();
 
   const listo = conectado();
-  $('reenviar').disabled = !listo;
+  $('reenviar').disabled = !listo || otaEnCurso;
+  refrescarOtaUi();
   if (listo) {
     $('primario').textContent = 'Desconectar';
     $('primario').disabled = false;
@@ -398,6 +441,17 @@ async function abrirGatt(etiqueta) {
   const service = await server.getPrimaryService(SVC);
   chrTime    = await service.getCharacteristic(CHR_TIME);
   chrWeather = await service.getCharacteristic(CHR_WEATHER);
+
+  // Un reloj con firmware anterior al OTA no tiene estas dos: el resto de la
+  // pagina tiene que seguir funcionando igual, que es justo el caso de alguien
+  // que va a actualizar por USB por primera vez.
+  try {
+    chrOtaCtrl = await service.getCharacteristic(CHR_OTA_CTRL);
+    chrOtaData = await service.getCharacteristic(CHR_OTA_DATA);
+  } catch (e) {
+    chrOtaCtrl = chrOtaData = null;
+    log('ota', 'este firmware no acepta actualizacion por bluetooth');
+  }
 
   esperaReconexion = RECONEXION_MIN_MS;
   setEstado('Conectado', 'on');
@@ -575,6 +629,148 @@ async function syncAll() {
 }
 
 $('reenviar').onclick = syncAll;
+
+/* ------------------------------------------------------------------- ota */
+
+function refrescarOtaUi() {
+  const disponible = conectado() && chrOtaCtrl && !otaEnCurso;
+  $('archivo').disabled = !disponible;
+  $('actualizar').disabled = !disponible || $('archivo').files.length === 0;
+}
+
+$('archivo').onchange = refrescarOtaUi;
+
+// El navegador no expone writeValueWithResponse en versiones viejas.
+const escribirCon = (chr, d) =>
+  chr.writeValueWithResponse ? chr.writeValueWithResponse(d) : chr.writeValue(d);
+
+let otaEspera = null;
+
+function onOtaNotify(ev) {
+  const v = ev.target.value;
+  const dato = { estado: v.getUint8(0), recibido: v.getUint32(1, true), err: v.getUint8(5) };
+
+  // El avance es informativo; solo los cambios de fase desbloquean el envio.
+  if (dato.estado === OTA_PROGRESO) {
+    log('ota', `el reloj confirma ${Math.round(dato.recibido / 1024)} KB`);
+    return;
+  }
+  if (otaEspera) {
+    const resolver = otaEspera;
+    otaEspera = null;
+    resolver(dato);
+  }
+}
+
+function esperarOta(ms) {
+  return new Promise((resolve, reject) => {
+    const t = setTimeout(() => {
+      otaEspera = null;
+      reject(new Error('el reloj no respondio'));
+    }, ms);
+    otaEspera = d => { clearTimeout(t); resolve(d); };
+  });
+}
+
+function pintarBarra(hecho, total) {
+  const pct = total ? Math.round(hecho * 100 / total) : 0;
+  $('barra').style.width = pct + '%';
+  return pct;
+}
+
+async function actualizarFirmware(file) {
+  if (!chrOtaCtrl || !chrOtaData) throw new Error('el reloj no soporta ota');
+  if (!conectado()) throw new Error('sin conexion');
+
+  const datos = new Uint8Array(await file.arrayBuffer());
+
+  // Toda imagen de ESP-IDF empieza con 0xE9. Sin esta comprobacion, elegir el
+  // archivo equivocado se descubriria despues de dos minutos de transferencia.
+  if (datos.length < 1024 || datos[0] !== 0xE9) {
+    throw new Error('ese archivo no es un firmware de esp32');
+  }
+
+  otaEnCurso = true;
+  pararTimers();          // el enlace es para el firmware, nada de hora ni clima
+  setEstado('Actualizando', 'wait');
+  $('progreso').hidden = false;
+  pintarBarra(0, 1);
+  log('ota', `${file.name}, ${Math.round(datos.length / 1024)} KB`);
+
+  await chrOtaCtrl.startNotifications();
+  chrOtaCtrl.addEventListener('characteristicvaluechanged', onOtaNotify);
+
+  try {
+    const inicio = new DataView(new ArrayBuffer(5));
+    inicio.setUint8(0, OTA_START);
+    inicio.setUint32(1, datos.length, true);
+    await escribirCon(chrOtaCtrl, inicio);
+
+    const listo = await esperarOta(15000);
+    if (listo.estado !== OTA_LISTO) throw new Error('el reloj rechazo la actualizacion');
+    log('ota', 'ranura preparada, enviando');
+
+    const sinRespuesta = chrOtaData.writeValueWithoutResponse
+      ? d => chrOtaData.writeValueWithoutResponse(d)
+      : d => chrOtaData.writeValue(d);
+
+    let trozo = OTA_CHUNK_MAX, off = 0, ultimoPct = -1;
+    while (off < datos.length) {
+      const parte = datos.subarray(off, off + trozo);
+      try {
+        await sinRespuesta(parte);
+      } catch (e) {
+        // Casi siempre es que el MTU negociado es menor de lo que pedimos.
+        if (trozo > OTA_CHUNK_MIN) {
+          trozo = Math.floor(trozo / 2);
+          log('ota', `bajando el trozo a ${trozo} bytes`);
+          continue;
+        }
+        throw e;
+      }
+      off += parte.length;
+
+      const pct = pintarBarra(off, datos.length);
+      if (pct !== ultimoPct && pct % 10 === 0) {
+        log('ota', `${pct}%`);
+        ultimoPct = pct;
+      }
+    }
+
+    await escribirCon(chrOtaCtrl, new Uint8Array([OTA_END]));
+    const fin = await esperarOta(20000);
+    if (fin.estado !== OTA_OK) throw new Error('la imagen no paso la validacion');
+
+    pintarBarra(1, 1);
+    log('ota', 'firmware aceptado, el reloj se reinicia', 'ok');
+  } catch (e) {
+    // Cancelar libera la ranura. Si el enlace ya murio da igual que falle.
+    try { await escribirCon(chrOtaCtrl, new Uint8Array([OTA_ABORT])); } catch (_) {}
+    throw e;
+  } finally {
+    chrOtaCtrl.removeEventListener('characteristicvaluechanged', onOtaNotify);
+    otaEnCurso = false;
+  }
+}
+
+$('actualizar').onclick = async () => {
+  const file = $('archivo').files[0];
+  if (!file) return;
+
+  otaEnCurso = true;
+  refrescarOtaUi();
+  try {
+    await actualizarFirmware(file);
+  } catch (e) {
+    log('err', 'ota: ' + e.message, 'err');
+    $('progreso').hidden = true;
+  } finally {
+    otaEnCurso = false;
+    // Tras un OTA bueno el reloj se reinicia y cae el enlace; la cadena de
+    // reconexion de siempre lo recupera sola.
+    setEstado(conectado() ? 'Conectado' : 'Desconectado', conectado() ? 'on' : '');
+  }
+};
 
 /* ------------------------------------------------------------------ pwa */
 

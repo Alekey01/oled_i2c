@@ -28,6 +28,7 @@
 
 #include "bitcat.h"
 #include "ble_sync.h"
+#include "ota.h"
 #include "ssd1306.h"
 #include "weather.h"
 
@@ -36,15 +37,20 @@ static const char *TAG = "reloj8b";
 typedef enum {
     VIEW_CLOCK = 0,
     VIEW_WEATHER,
+    VIEW_TREND,    /* temperatura de las ultimas 24 h */
     VIEW_CAT,      /* BitCat en medio, hora y clima chicos arriba */
     VIEW_WALK,     /* BitCat cruzando la pantalla */
-    VIEW_COUNT,
+    VIEW_COUNT,    /* fin del ciclo del boton corto */
+    VIEW_GAME,     /* fuera del ciclo: se entra con pulsacion larga desde WALK */
 } view_t;
 
-/* Refresco rapido solo en la vista animada; las otras no lo necesitan. */
-#define REFRESH_MS_STATIC 250
+/* Refresco rapido solo en las vistas animadas; las otras van a 1 Hz. */
 #define REFRESH_MS_WALK   80
+#define REFRESH_MS_GAME   60
 #define WALK_STEP_PX      2
+
+/* A partir de aqui una pulsacion cuenta como larga. */
+#define LONG_PRESS_US (700 * 1000)
 
 /* Saludo: dura 24 ciclos (~2 s) y la manita sube y baja cada 3 (~240 ms).
    La probabilidad se evalua por ciclo, solo mientras BitCat se ve entero;
@@ -66,6 +72,22 @@ static int32_t s_tz_offset;         /* segundos respecto a UTC, los manda el cel
 static bool s_time_set;
 static int64_t s_last_sync_us;
 
+/*
+ * Historial de temperatura para la vista de 24 h. Cada ranura guarda un grado
+ * entero y el numero de hora absoluta (horas desde epoch, ya en local) en que se
+ * tomo. Al indexar por (hora % 24) el buffer se recicla solo: una ranura cuya
+ * hora quede a mas de 24 de la actual es de ayer y se ignora sin tener que
+ * limpiarla.
+ */
+#define HIST_H 24
+
+typedef struct {
+    int8_t grados[HIST_H];
+    uint32_t hora[HIST_H];   /* 0 = ranura nunca escrita */
+} hist_t;
+
+static hist_t s_hist;
+
 static volatile view_t s_view = VIEW_CLOCK;
 
 static TaskHandle_t s_display_h;
@@ -75,6 +97,9 @@ static TaskHandle_t s_button_h;
    (s_last_activity_us); la otra unicamente las lee. */
 static volatile bool s_screen_on = true;
 static volatile int64_t s_last_activity_us;
+
+/* Apagado a mano con pulsacion larga. Cualquier toque posterior lo revierte. */
+static volatile bool s_screen_req_off;
 
 /* Animacion del paseo y humor del gato; solo los toca la tarea de pantalla. */
 static int s_walk_x = -BITCAT_W;
@@ -101,12 +126,26 @@ static void on_time(uint32_t epoch_utc, int32_t tz_offset_sec)
     xSemaphoreGive(s_mux);
 }
 
+/* Redondeo al entero mas cercano sin arrastrar math.h por una sola cuenta. */
+static int redondear(float v)
+{
+    return (int)(v + (v >= 0 ? 0.5f : -0.5f));
+}
+
 static void on_weather(const weather_t *w)
 {
     xSemaphoreTake(s_mux, portMAX_DELAY);
     s_weather = *w;
     s_weather.valid = true;
     s_last_sync_us = esp_timer_get_time();
+
+    /* Sin hora no hay donde archivarlo: la ranura se calcula a partir de ella. */
+    if (s_time_set) {
+        uint32_t hora = (uint32_t)((time(NULL) + s_tz_offset) / 3600);
+        int i = hora % HIST_H;
+        s_hist.grados[i] = (int8_t)redondear(w->temp_c);
+        s_hist.hora[i] = hora;
+    }
     xSemaphoreGive(s_mux);
 }
 
@@ -221,8 +260,71 @@ static void draw_weather(const weather_t *w, const struct tm *t, bool have_time)
     ssd1306_text(&s_oled, 34, 25, buf, 1, true);
 }
 
+/* Vista 3: una barra por hora con la temperatura de las ultimas 24. */
+#define TREND_X0   4
+#define TREND_STEP 5
+#define TREND_BAR  4
+#define TREND_Y1   31                       /* piso de las barras */
+#define TREND_ALTO 23                       /* de y=9 a y=31 */
+
+static void draw_trend(const hist_t *h, uint32_t hora_actual, bool have_time)
+{
+    char buf[32];
+
+    if (!have_time) {
+        text_center(12, "SIN HORA AUN", 1);
+        return;
+    }
+
+    /* Se recorren las 24 horas de la mas vieja a la mas nueva. Una ranura solo
+       cuenta si su marca coincide con la hora que le toca: asi las que quedaron
+       de ayer se descartan solas, sin tener que limpiar nada. */
+    int valores[HIST_H];
+    bool hay[HIST_H];
+    int n = 0, min = 127, max = -128;
+
+    for (int i = 0; i < HIST_H; i++) {
+        uint32_t hora = hora_actual - (HIST_H - 1) + i;
+        int slot = hora % HIST_H;
+        hay[i] = (h->hora[slot] == hora);
+        if (!hay[i]) {
+            continue;
+        }
+        valores[i] = h->grados[slot];
+        if (valores[i] < min) min = valores[i];
+        if (valores[i] > max) max = valores[i];
+        n++;
+    }
+
+    if (n < 2) {
+        text_center(4, "HISTORIAL 24H", 1);
+        text_center(18, n ? "FALTAN HORAS" : "SIN DATOS AUN", 1);
+        return;
+    }
+
+    ssd1306_text(&s_oled, 0, 0, "24H", 1, true);
+    snprintf(buf, sizeof(buf), "%d`/%d`", min, max);
+    ssd1306_text(&s_oled, SSD1306_WIDTH - ssd1306_text_width(buf, 1) + 1, 0, buf, 1, true);
+
+    /* Un dia plano no debe verse como una linea pegada al piso: sin rango, todas
+       las barras van a media altura. */
+    int rango = max - min;
+
+    for (int i = 0; i < HIST_H; i++) {
+        int x = TREND_X0 + i * TREND_STEP;
+        if (!hay[i]) {
+            /* Hueco: un punto en el piso, para que se note que falta el dato. */
+            ssd1306_fill_rect(&s_oled, x + 1, TREND_Y1, 2, 1, true);
+            continue;
+        }
+        int alto = rango > 0 ? 1 + (valores[i] - min) * (TREND_ALTO - 1) / rango
+                             : TREND_ALTO / 2;
+        ssd1306_fill_rect(&s_oled, x, TREND_Y1 - alto + 1, TREND_BAR, alto, true);
+    }
+}
+
 /*
- * Vista 3: BitCat en medio, con la hora chica arriba a la izquierda y el clima
+ * Vista 4: BitCat en medio, con la hora chica arriba a la izquierda y el clima
  * arriba a la derecha. El humor cambia solo cada 15 minutos.
  */
 static void actualizar_humor(void)
@@ -242,11 +344,52 @@ static void actualizar_humor(void)
     ESP_LOGI(TAG, "humor: %s", bitcat_expr_nombre(s_expr));
 }
 
+/*
+ * Elige pose, expresion y accesorio. Las reglas del clima ganan sobre el humor
+ * aleatorio: si esta lloviendo, BitCat saca la sombrilla aunque le tocara estar
+ * enojado. Cuando no hay nada que reportar vuelve al humor de siempre, que es lo
+ * que pasa la mayor parte del tiempo.
+ */
+static void humor_por_clima(const weather_t *w, const struct tm *t, bool have_time,
+                            bitcat_pose_t *pose, bitcat_expr_t *expr, bitcat_acc_t *acc)
+{
+    *pose = BITCAT_SIT;
+    *acc  = BITCAT_ACC_NINGUNO;
+
+    /* De madrugada duerme pase lo que pase: nadie saca la sombrilla a las 3am. */
+    if (have_time && (t->tm_hour >= 23 || t->tm_hour < 6)) {
+        *expr = BITCAT_DORMIDO;
+        *acc  = BITCAT_ACC_ZZZ;
+        return;
+    }
+
+    if (w->valid) {
+        if (w->temp_c <= 0.0f) {
+            *expr = BITCAT_ENOJADO;
+            *acc  = BITCAT_ACC_FRIO;
+            return;
+        }
+        if (weather_hay_precipitacion(w->wmo_code)) {
+            /* La sombrilla se apoya en la patita levantada de esta pose. */
+            *pose = BITCAT_WAVE_A;
+            *expr = BITCAT_NORMAL;
+            *acc  = BITCAT_ACC_PARAGUAS;
+            return;
+        }
+        if (weather_es_despejado(w->wmo_code) && w->temp_c >= 25.0f) {
+            *expr = BITCAT_FELIZ;
+            *acc  = BITCAT_ACC_LENTES;
+            return;
+        }
+    }
+
+    actualizar_humor();
+    *expr = s_expr;
+}
+
 static void draw_cat(const weather_t *w, const struct tm *t, bool have_time)
 {
     char buf[16];
-
-    actualizar_humor();
 
     if (have_time) {
         snprintf(buf, sizeof(buf), "%02d:%02d", t->tm_hour, t->tm_min);
@@ -262,8 +405,15 @@ static void draw_cat(const weather_t *w, const struct tm *t, bool have_time)
     }
     ssd1306_text(&s_oled, SSD1306_WIDTH - ssd1306_text_width(buf, 1) + 1, 0, buf, 1, true);
 
-    /* 24 px de alto a partir de y=8 llegan justo al borde inferior. */
-    bitcat_draw(&s_oled, (SSD1306_WIDTH - BITCAT_W) / 2, 8, BITCAT_SIT, s_expr);
+    bitcat_pose_t pose;
+    bitcat_expr_t expr;
+    bitcat_acc_t acc;
+    humor_por_clima(w, t, have_time, &pose, &expr, &acc);
+
+    /* 24 px de alto a partir de y=8 llegan justo al borde inferior. Los
+       accesorios estan dibujados para caber dentro de la caja del sprite, que es
+       lo unico que queda libre debajo de la hora y la temperatura. */
+    bitcat_draw_acc(&s_oled, (SSD1306_WIDTH - BITCAT_W) / 2, 8, pose, expr, acc);
 }
 
 /* Vista 4: BitCat cruza la pantalla de izquierda a derecha. */
@@ -309,6 +459,229 @@ static void walk_step(void)
     }
 }
 
+/* ----------------------------------------------------------------- juego */
+
+/*
+ * Endless runner: BitCat corre en el sitio y el mundo pasa hacia la izquierda.
+ * Pulsacion corta salta, larga sale. Toda la fisica es entera; a 60 ms por
+ * cuadro el salto dura unos 900 ms, que con obstaculos de 6 a 10 px sobra.
+ *
+ * El estado lo mueve solo la tarea de pantalla. La del boton no escribe nada:
+ * deja pedido el salto en una bandera y game_step() lo consume, que evita tener
+ * que meter un mutex en el bucle del juego.
+ */
+#define GAME_SUELO    31                       /* fila de la linea de suelo */
+#define GAME_CAT_X    6
+#define GAME_CAT_Y    (GAME_SUELO - BITCAT_H)  /* patas justo encima del suelo */
+#define GAME_VY0      5                        /* impulso: sube 15 px */
+#define GAME_OBST     3
+#define GAME_VEL_MIN  3
+#define GAME_VEL_MAX  6
+#define GAME_HUECO_MIN 46
+#define GAME_HUECO_MAX 86
+
+typedef struct {
+    int x, w, h;
+    bool activo;
+    bool contado;   /* ya sumo punto al pasar al gato */
+} obst_t;
+
+static obst_t s_obst[GAME_OBST];
+static int s_game_alto;      /* px por encima del suelo */
+static int s_game_vy;
+static int s_game_score;
+static int s_game_best;
+static int s_game_tick;
+static bool s_game_over;
+static bool s_game_arranco;
+static volatile bool s_game_salto_pedido;
+
+static int game_vel(void)
+{
+    int v = GAME_VEL_MIN + s_game_score / 10;
+    return v > GAME_VEL_MAX ? GAME_VEL_MAX : v;
+}
+
+static void game_reset(void)
+{
+    memset(s_obst, 0, sizeof(s_obst));
+    s_game_alto = 0;
+    s_game_vy = 0;
+    s_game_score = 0;
+    s_game_tick = 0;
+    s_game_over = false;
+    s_game_arranco = false;
+    s_game_salto_pedido = false;
+}
+
+/* La llama la tarea del boton. */
+static void game_pedir_salto(void)
+{
+    s_game_salto_pedido = true;
+}
+
+/* Caja del gato: solo cuerpo y patas. La cabeza va muy arriba para chocar con
+   algo apoyado en el suelo, y contarla haria el juego injustamente dificil. */
+static bool game_choca(const obst_t *o, int cat_y)
+{
+    int cx0 = GAME_CAT_X + 9,  cx1 = GAME_CAT_X + 21;
+    int cy0 = cat_y + 15,      cy1 = cat_y + 23;
+    int ox0 = o->x,            ox1 = o->x + o->w - 1;
+    int oy0 = GAME_SUELO - o->h, oy1 = GAME_SUELO - 1;
+
+    return cx0 <= ox1 && cx1 >= ox0 && cy0 <= oy1 && cy1 >= oy0;
+}
+
+static void game_soltar_obstaculo(void)
+{
+    /* El hueco se mide desde el mas adelantado, no desde el borde: si no, dos
+       obstaculos podrian salir pegados y no habria forma de saltarlos. */
+    int derecha = SSD1306_WIDTH;
+    for (int i = 0; i < GAME_OBST; i++) {
+        if (s_obst[i].activo && s_obst[i].x + s_obst[i].w > derecha) {
+            derecha = s_obst[i].x + s_obst[i].w;
+        }
+    }
+    int hueco = GAME_HUECO_MIN + esp_random() % (GAME_HUECO_MAX - GAME_HUECO_MIN + 1);
+
+    for (int i = 0; i < GAME_OBST; i++) {
+        if (s_obst[i].activo) {
+            continue;
+        }
+        s_obst[i].x = derecha + hueco;
+        s_obst[i].w = 4 + esp_random() % 3;    /* 4..6 px */
+        s_obst[i].h = 6 + esp_random() % 5;    /* 6..10 px */
+        s_obst[i].activo = true;
+        s_obst[i].contado = false;
+        return;
+    }
+}
+
+static void game_step(void)
+{
+    s_game_tick++;
+
+    if (s_game_over) {
+        /* En game over la pulsacion corta reinicia en vez de saltar. */
+        if (s_game_salto_pedido) {
+            s_game_salto_pedido = false;
+            game_reset();
+        }
+        return;
+    }
+
+    if (s_game_salto_pedido) {
+        s_game_salto_pedido = false;
+        s_game_arranco = true;
+        if (s_game_alto == 0) {
+            s_game_vy = GAME_VY0;
+        }
+    }
+
+    /* Hasta el primer salto el mundo no se mueve: da tiempo a leer la ayuda. */
+    if (!s_game_arranco) {
+        return;
+    }
+
+    s_game_alto += s_game_vy;
+    s_game_vy--;
+    if (s_game_alto <= 0) {
+        s_game_alto = 0;
+        s_game_vy = 0;
+    }
+
+    int vel = game_vel();
+    int cat_y = GAME_CAT_Y - s_game_alto;
+    int vivos = 0;
+
+    for (int i = 0; i < GAME_OBST; i++) {
+        obst_t *o = &s_obst[i];
+        if (!o->activo) {
+            continue;
+        }
+        o->x -= vel;
+        if (o->x + o->w < 0) {
+            o->activo = false;
+            continue;
+        }
+        vivos++;
+        if (!o->contado && o->x + o->w < GAME_CAT_X + 9) {
+            o->contado = true;
+            s_game_score++;
+        }
+        if (game_choca(o, cat_y)) {
+            s_game_over = true;
+            if (s_game_score > s_game_best) {
+                s_game_best = s_game_score;
+            }
+            ESP_LOGI(TAG, "game over: %d puntos (record %d)", s_game_score, s_game_best);
+            return;
+        }
+    }
+
+    if (vivos < GAME_OBST) {
+        game_soltar_obstaculo();
+    }
+}
+
+static void draw_game(void)
+{
+    char buf[24];
+
+    for (int x = 0; x < SSD1306_WIDTH; x += 4) {
+        ssd1306_fill_rect(&s_oled, x, GAME_SUELO, 2, 1, true);
+    }
+
+    for (int i = 0; i < GAME_OBST; i++) {
+        const obst_t *o = &s_obst[i];
+        if (o->activo) {
+            ssd1306_fill_rect(&s_oled, o->x, GAME_SUELO - o->h, o->w, o->h, true);
+        }
+    }
+
+    if (s_game_over) {
+        /* Se borra una banda para que el texto no compita con el gato. */
+        ssd1306_fill_rect(&s_oled, 0, 4, SSD1306_WIDTH, 22, false);
+        text_center(5, "GAME OVER", 1);
+        snprintf(buf, sizeof(buf), "%d  RECORD %d", s_game_score, s_game_best);
+        text_center(16, buf, 1);
+        return;
+    }
+
+    /* En el aire va con las patas juntas; en el suelo alterna la carrera. */
+    bitcat_pose_t pose = s_game_alto > 0 ? BITCAT_SIT
+                       : ((s_game_tick / 2) % 2 ? BITCAT_WALK_B : BITCAT_WALK_A);
+    bitcat_draw(&s_oled, GAME_CAT_X, GAME_CAT_Y - s_game_alto, pose,
+                s_game_alto > 0 ? BITCAT_SORPRESA : BITCAT_NORMAL);
+
+    if (!s_game_arranco) {
+        text_center(2, "PULSA PARA SALTAR", 1);
+        return;
+    }
+
+    snprintf(buf, sizeof(buf), "%d", s_game_score);
+    ssd1306_text(&s_oled, SSD1306_WIDTH - ssd1306_text_width(buf, 1) + 1, 0, buf, 1, true);
+}
+
+/*
+ * Mientras entra firmware nuevo la pantalla no muestra la vista: si el usuario
+ * ve el reloj tan campante mientras el celular dice "actualizando", lo normal es
+ * que desconecte creyendo que se colgo.
+ */
+static void draw_ota(const ota_estado_t *o)
+{
+    char buf[24];
+    int pct = o->total ? (int)(((uint64_t)o->recibido * 100) / o->total) : 0;
+
+    text_center(0, "ACTUALIZANDO", 1);
+
+    ssd1306_rect(&s_oled, 4, 11, 120, 10, true);
+    ssd1306_fill_rect(&s_oled, 6, 13, pct * 116 / 100, 6, true);
+
+    snprintf(buf, sizeof(buf), "%d%%  %lu KB", pct, (unsigned long)(o->recibido / 1024));
+    text_center(23, buf, 1);
+}
+
 /* Puede llamarse desde la tarea de pantalla o desde la del boton. */
 static void render(void)
 {
@@ -316,6 +689,7 @@ static void render(void)
 
     xSemaphoreTake(s_mux, portMAX_DELAY);
     weather_t w = s_weather;
+    hist_t hist = s_hist;
     int32_t tz = s_tz_offset;
     bool have_time = s_time_set;
     int64_t last_sync = s_last_sync_us;
@@ -323,38 +697,53 @@ static void render(void)
 
     /* La hora del sistema se guarda en UTC; el offset del celular la vuelve local. */
     struct tm tm_now = {0};
+    uint32_t hora_abs = 0;
     if (have_time) {
         time_t local = time(NULL) + tz;
         gmtime_r(&local, &tm_now);
+        hora_abs = (uint32_t)(local / 3600);
     }
 
     ssd1306_clear(&s_oled);
 
-    switch (s_view) {
-    case VIEW_WEATHER:
-        draw_weather(&w, &tm_now, have_time);
-        break;
-    case VIEW_CAT:
-        draw_cat(&w, &tm_now, have_time);
-        break;
-    case VIEW_WALK:
-        draw_walk();
-        break;
-    default:
-        draw_clock(&tm_now, have_time);
-        break;
-    }
+    ota_estado_t ota;
+    ota_estado(&ota);
 
-    /* La runa de Bluetooth va solo en la vista del reloj: es la unica con la
-       esquina libre. Si no hay conexion y los datos ya llevan mas de una hora
-       sin refrescarse, parpadea un cuadro hueco abajo a la derecha. */
-    bool stale = have_time && (esp_timer_get_time() - last_sync) > 3600LL * 1000000LL;
-    if (ble_sync_connected()) {
-        if (s_view == VIEW_CLOCK) {
-            draw_bt_icon(1, 1);
+    if (ota.activo) {
+        draw_ota(&ota);
+    } else {
+        switch (s_view) {
+        case VIEW_WEATHER:
+            draw_weather(&w, &tm_now, have_time);
+            break;
+        case VIEW_TREND:
+            draw_trend(&hist, hora_abs, have_time);
+            break;
+        case VIEW_CAT:
+            draw_cat(&w, &tm_now, have_time);
+            break;
+        case VIEW_WALK:
+            draw_walk();
+            break;
+        case VIEW_GAME:
+            draw_game();
+            break;
+        default:
+            draw_clock(&tm_now, have_time);
+            break;
         }
-    } else if (stale && (tm_now.tm_sec % 2) == 0) {
-        ssd1306_rect(&s_oled, 124, 28, 4, 4, true);
+
+        /* La runa de Bluetooth va solo en la vista del reloj: es la unica con la
+           esquina libre. Si no hay conexion y los datos ya llevan mas de una hora
+           sin refrescarse, parpadea un cuadro hueco abajo a la derecha. */
+        bool stale = have_time && (esp_timer_get_time() - last_sync) > 3600LL * 1000000LL;
+        if (ble_sync_connected()) {
+            if (s_view == VIEW_CLOCK) {
+                draw_bt_icon(1, 1);
+            }
+        } else if (stale && s_view != VIEW_GAME && (tm_now.tm_sec % 2) == 0) {
+            ssd1306_rect(&s_oled, 124, 28, 4, 4, true);
+        }
     }
 
     ssd1306_flush(&s_oled);
@@ -381,6 +770,7 @@ static void display_task(void *arg)
 {
     const int64_t timeout_us = (int64_t)CONFIG_APP_SCREEN_TIMEOUT_S * 1000000;
     view_t last = s_view;
+    bool ota_confirmado = false;
 
     s_last_activity_us = esp_timer_get_time();
 
@@ -394,16 +784,40 @@ static void display_task(void *arg)
                 s_walk_x = -BITCAT_W;
                 s_walk_tick = 0;
                 s_wave_left = 0;
+            } else if (last == VIEW_GAME) {
+                /* El reinicio vive aqui y no en la tarea del boton para que un
+                   solo hilo sea dueño del estado del juego. */
+                game_reset();
             }
         }
 
-        if (timeout_us > 0 && esp_timer_get_time() - s_last_activity_us > timeout_us) {
+        /*
+         * Confirmar el arranque solo despues de un rato en marcha: si algo del
+         * firmware nuevo se cuelga en el arranque, nadie llega aqui y el
+         * bootloader vuelve solo a la version anterior en el siguiente reset.
+         */
+        if (!ota_confirmado && esp_timer_get_time() > 30LL * 1000000) {
+            ota_marcar_valido();
+            ota_confirmado = true;
+        }
+
+        ota_estado_t ota;
+        ota_estado(&ota);
+
+        /* Con una actualizacion en curso la pantalla no se apaga: es justo
+           cuando el usuario quiere ver que va avanzando. */
+        bool apagar = !ota.activo
+                   && (s_screen_req_off
+                       || (timeout_us > 0
+                           && esp_timer_get_time() - s_last_activity_us > timeout_us));
+        if (apagar) {
             if (s_screen_on) {
                 xSemaphoreTake(s_draw_mux, portMAX_DELAY);
                 ssd1306_power(&s_oled, false);
                 xSemaphoreGive(s_draw_mux);
                 s_screen_on = false;
-                ESP_LOGI(TAG, "pantalla apagada por inactividad");
+                ESP_LOGI(TAG, "pantalla apagada (%s)",
+                         s_screen_req_off ? "a mano" : "por inactividad");
             }
             /* Sin nada que dibujar, la tarea se bloquea de verdad: es lo que
                deja al chip entrar en light sleep. */
@@ -416,7 +830,14 @@ static void display_task(void *arg)
         bool encendiendo = !s_screen_on;
 
         uint32_t espera_ms;
-        if (s_view == VIEW_WALK) {
+        if (ota.activo) {
+            render();
+            espera_ms = 250;   /* la barra tiene que verse avanzar */
+        } else if (s_view == VIEW_GAME) {
+            game_step();
+            render();
+            espera_ms = REFRESH_MS_GAME;
+        } else if (s_view == VIEW_WALK) {
             walk_step();
             render();
             espera_ms = REFRESH_MS_WALK;
@@ -435,6 +856,42 @@ static void display_task(void *arg)
         /* La espera es interrumpible: el boton notifica y se redibuja al toque. */
         ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(espera_ms));
     }
+}
+
+/*
+ * Un boton, dos acciones. La corta es la de siempre; la larga depende de donde
+ * estes, que es lo que evita tener que agregar hardware para el juego.
+ *
+ *   vista            corta            larga
+ *   RELOJ/CLIMA/24H  siguiente vista  apagar la pantalla
+ *   GATO             siguiente vista  apagar la pantalla
+ *   PASEO            siguiente vista  entrar al juego
+ *   JUEGO            saltar           salir al paseo
+ */
+static void boton_corto(void)
+{
+    if (s_view == VIEW_GAME) {
+        game_pedir_salto();
+        return;
+    }
+    s_view = (s_view + 1) % VIEW_COUNT;
+    ESP_LOGI(TAG, "vista %d", s_view);
+}
+
+static void boton_largo(void)
+{
+    if (s_view == VIEW_GAME) {
+        s_view = VIEW_WALK;
+        ESP_LOGI(TAG, "saliendo del juego");
+        return;
+    }
+    if (s_view == VIEW_WALK) {
+        s_view = VIEW_GAME;
+        ESP_LOGI(TAG, "entrando al juego");
+        return;
+    }
+    s_screen_req_off = true;
+    ESP_LOGI(TAG, "apagando la pantalla a mano");
 }
 
 static void IRAM_ATTR button_isr(void *arg)
@@ -477,11 +934,31 @@ static void button_task(void *arg)
         if (gpio_get_level(CONFIG_APP_BUTTON_GPIO) == 0) {
             /* Con la pantalla apagada, el primer toque solo la enciende: seria
                molesto que ademas cambiara de vista sin que la hayas visto. */
-            if (s_screen_on) {
-                s_view = (s_view + 1) % VIEW_COUNT;
-                ESP_LOGI(TAG, "vista %d", s_view);
-            }
+            bool estaba_encendida = s_screen_on && !s_screen_req_off;
+            s_screen_req_off = false;
             s_last_activity_us = esp_timer_get_time();
+
+            /* Sondear cada 20 ms solo mientras el boton siga abajo no estorba al
+               light sleep: el chip ya esta despierto porque lo estas tocando. La
+               accion larga se dispara al cruzar el umbral, no al soltar, para
+               que se vea que paso algo sin tener que adivinar cuanto falta. */
+            int64_t t0 = esp_timer_get_time();
+            bool largo = false;
+            while (gpio_get_level(CONFIG_APP_BUTTON_GPIO) == 0) {
+                if (esp_timer_get_time() - t0 >= LONG_PRESS_US) {
+                    largo = true;
+                    break;
+                }
+                vTaskDelay(pdMS_TO_TICKS(20));
+            }
+
+            if (estaba_encendida) {
+                if (largo) {
+                    boton_largo();
+                } else {
+                    boton_corto();
+                }
+            }
             xTaskNotifyGive(s_display_h);
 
             while (gpio_get_level(CONFIG_APP_BUTTON_GPIO) == 0) {

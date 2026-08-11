@@ -15,6 +15,12 @@ typedef struct {
 /* Descripcion corta (mayusculas, <= 13 caracteres) del codigo WMO. */
 const char *weather_wmo_desc(int code);
 
+/* true si del cielo esta cayendo algo: llovizna, lluvia, nieve o tormenta. */
+bool weather_hay_precipitacion(int code);
+
+/* true si el cielo esta despejado o casi. */
+bool weather_es_despejado(int code);
+
 /* Icono de 30x30 px con la esquina superior izquierda en (x, y). */
 void weather_draw_icon(ssd1306_t *d, int x, int y, int wmo_code, bool night);
 

@@ -1,0 +1,14 @@
+# ESP32-S3 con 8 MB de flash.
+#
+# Dos ranuras de app para poder actualizar por BLE: la nueva imagen se escribe en
+# la ranura que no esta corriendo y el bootloader arranca esa a partir del
+# siguiente reset. Si la actualizacion falla a medias, la ranura activa nunca se
+# toco y el reloj sigue funcionando.
+#
+# Las particiones de app tienen que empezar en multiplos de 0x10000.
+#
+# Nombre,   Tipo, SubTipo,  Offset,   Tamano
+nvs,        data, nvs,      0x9000,   0x5000
+otadata,    data, ota,      0xe000,   0x2000
+app0,       app,  ota_0,    0x10000,  0x200000
+app1,       app,  ota_1,    0x210000, 0x200000

@@ -35,3 +35,21 @@ const char *weather_wmo_desc(int code)
     default: return "SIN DATO";
     }
 }
+
+/*
+ * Rangos de la tabla WMO: 51-57 llovizna, 61-67 lluvia, 71-77 nieve,
+ * 80-86 chubascos y nevadas, 95-99 tormenta. La niebla (45-48) no cuenta:
+ * moja, pero no es algo de lo que valga la pena taparse.
+ */
+bool weather_hay_precipitacion(int code)
+{
+    return (code >= 51 && code <= 67)
+        || (code >= 71 && code <= 77)
+        || (code >= 80 && code <= 86)
+        || (code >= 95 && code <= 99);
+}
+
+bool weather_es_despejado(int code)
+{
+    return code == 0 || code == 1;
+}

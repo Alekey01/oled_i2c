@@ -178,6 +178,91 @@ static const char *OJOS[BITCAT_EXPR_COUNT][2][4] = {
 };
 
 
+/* --------------------------------------------------------------- accesorios */
+
+/* Estampa un bloquecito de arte relativo al origen del sprite. Recorre cada fila
+   hasta el NUL, asi que no hay que declarar el ancho por separado. */
+static void estampar(ssd1306_t *d, int x, int y, const char *const *filas, int n)
+{
+    for (int r = 0; r < n; r++) {
+        for (int c = 0; filas[r][c] != '\0'; c++) {
+            if (filas[r][c] == '#') {
+                ssd1306_pixel(d, x + c, y + r, true);
+            }
+        }
+    }
+}
+
+/* Sombrilla: va sobre la patita levantada de BITCAT_WAVE_A, que ocupa las
+   columnas 26..30. El mango es el propio brazo del gato. Arranca en la columna
+   25 y no antes: la oreja derecha llega hasta la 23, y pegadas se leen como una
+   sola mancha en vez de como dos cosas distintas. */
+static const char *const ACC_PARAGUAS[3] = {
+    "..##..",
+    ".####.",
+    "######",
+};
+
+/* Lentes: cubren por completo los ojos de 4x4, asi que funcionan con cualquier
+   expresion sin tener que forzar la de abajo. */
+static const char *const ACC_LENTES[4] = {
+    "#####..#####",
+    "############",
+    ".####..####.",
+    "..###..###..",
+};
+
+/* Tiritar: rayitas de movimiento a los costados, fuera de la caja del sprite. */
+static const char *const ACC_RAYAS[7] = {
+    "###",
+    "",
+    "",
+    "###",
+    "",
+    "",
+    "###",
+};
+
+static const char *const ACC_Z[3] = {
+    "###",
+    ".#.",
+    "###",
+};
+
+static void dibujar_accesorio(ssd1306_t *d, int x, int y, bitcat_acc_t acc)
+{
+    switch (acc) {
+    case BITCAT_ACC_PARAGUAS:
+        estampar(d, x + 25, y + 0, ACC_PARAGUAS, 3);
+        break;
+    case BITCAT_ACC_LENTES:
+        estampar(d, x + 9, y + 6, ACC_LENTES, 4);
+        break;
+    case BITCAT_ACC_FRIO:
+        /* A la altura de la cabeza (filas 6, 9 y 12), en las columnas que deja
+           libres a cada lado. Mas abajo se pegarian a la cola y mas afuera se
+           leerian como suciedad en vez de como movimiento. */
+        estampar(d, x + 1, y + 6, ACC_RAYAS, 7);
+        estampar(d, x + 27, y + 6, ACC_RAYAS, 7);
+        break;
+    case BITCAT_ACC_ZZZ:
+        estampar(d, x + 26, y + 4, ACC_Z, 3);
+        estampar(d, x + 28, y + 0, ACC_Z, 3);
+        break;
+    default:
+        break;
+    }
+}
+
+/* ------------------------------------------------------------------- dibujo */
+
+void bitcat_draw_acc(ssd1306_t *d, int x, int y, bitcat_pose_t pose,
+                     bitcat_expr_t expr, bitcat_acc_t acc)
+{
+    bitcat_draw(d, x, y, pose, expr);
+    dibujar_accesorio(d, x, y, acc % BITCAT_ACC_COUNT);
+}
+
 void bitcat_draw(ssd1306_t *d, int x, int y, bitcat_pose_t pose, bitcat_expr_t expr)
 {
     const char **filas = BITCAT[pose % BITCAT_POSES];
@@ -209,4 +294,12 @@ const char *bitcat_expr_nombre(bitcat_expr_t expr)
         "normal", "feliz", "sorpresa", "dormido", "enojado", "amor",
     };
     return n[expr % BITCAT_EXPR_COUNT];
+}
+
+const char *bitcat_acc_nombre(bitcat_acc_t acc)
+{
+    static const char *n[BITCAT_ACC_COUNT] = {
+        "ninguno", "paraguas", "lentes", "frio", "zzz",
+    };
+    return n[acc % BITCAT_ACC_COUNT];
 }

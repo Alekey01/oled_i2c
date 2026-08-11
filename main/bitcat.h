@@ -27,8 +27,26 @@ typedef enum {
     BITCAT_EXPR_COUNT,
 } bitcat_expr_t;
 
+/* Accesorios: reaccionan al clima y a la hora. Se dibujan encima de la pose, y
+   estan pensados para caber dentro de la caja del sprite (mas unos pocos pixeles
+   a los lados en el caso del frio), porque en la vista del gato los 8 px de
+   arriba los ocupan la hora y la temperatura. */
+typedef enum {
+    BITCAT_ACC_NINGUNO = 0,
+    BITCAT_ACC_PARAGUAS,   /* lluvia: sombrilla sobre la patita levantada */
+    BITCAT_ACC_LENTES,     /* sol: lentes oscuros sobre los ojos */
+    BITCAT_ACC_FRIO,       /* bajo cero: rayitas de tiritar a los costados */
+    BITCAT_ACC_ZZZ,        /* madrugada: zetas subiendo */
+    BITCAT_ACC_COUNT,
+} bitcat_acc_t;
+
 /* Dibuja a BitCat con la esquina superior izquierda en (x, y). */
 void bitcat_draw(ssd1306_t *d, int x, int y, bitcat_pose_t pose, bitcat_expr_t expr);
 
-/* Nombre corto de la expresion, para el log. */
+/* Igual, con accesorio encima. bitcat_draw() equivale a pasar BITCAT_ACC_NINGUNO. */
+void bitcat_draw_acc(ssd1306_t *d, int x, int y, bitcat_pose_t pose,
+                     bitcat_expr_t expr, bitcat_acc_t acc);
+
+/* Nombres cortos, para el log. */
 const char *bitcat_expr_nombre(bitcat_expr_t expr);
+const char *bitcat_acc_nombre(bitcat_acc_t acc);

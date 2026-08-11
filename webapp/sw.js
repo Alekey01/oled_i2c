@@ -7,7 +7,7 @@
  * Sube CACHE al cambiar cualquier archivo del casco: el nombre nuevo es lo que
  * dispara el borrado del anterior en activate.
  */
-const CACHE = 'bitcat-watch-v2';
+const CACHE = 'bitcat-watch-v3';
 
 const CASCO = [
   './',
