@@ -2,8 +2,14 @@
 <html lang="es">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>RELOJ8BIT</title>
+<link rel="manifest" href="./manifest.json">
+<link rel="icon" href="./icon-192.png" type="image/png">
+<link rel="apple-touch-icon" href="./apple-touch-icon.png">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="theme-color" content="#faf9f4" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#0e0e0d" media="(prefers-color-scheme: dark)">
 <style>
   :root {
     color-scheme: light dark;
@@ -34,7 +40,10 @@
   body {
     margin: 0 auto;
     max-width: 27rem;
-    padding: 1.75rem 1.1rem 3rem;
+    /* env(safe-area-*) importa al instalarla: en modo standalone la pagina
+       llega hasta la muesca y la barra de gestos. */
+    padding: calc(1.75rem + env(safe-area-inset-top)) calc(1.1rem + env(safe-area-inset-right))
+             calc(3rem + env(safe-area-inset-bottom)) calc(1.1rem + env(safe-area-inset-left));
     background: var(--paper);
     color: var(--fg);
     font-family: ui-monospace, "Cascadia Mono", "Segoe UI Mono", Menlo, Consolas, monospace;
@@ -70,6 +79,7 @@
     cursor: pointer;
   }
   button.sec { background: transparent; color: var(--fg); }
+  button[hidden] { display: none; }
   button:active:not(:disabled) { transform: translate(4px, 4px); box-shadow: none; }
   button:disabled {
     opacity: .3; cursor: default;
@@ -121,6 +131,7 @@
 
 <button id="primario">Conectar</button>
 <button id="reenviar" class="sec" disabled>Reenviar ahora</button>
+<button id="instalar" class="sec" hidden>Instalar app</button>
 
 <dl>
   <div class="fila"><dt>Hora</dt><dd id="vHora">--</dd></div>
@@ -561,8 +572,72 @@ async function syncAll() {
 
 $('reenviar').onclick = syncAll;
 
+/* ------------------------------------------------------------------ pwa */
+
+// El enlace BLE no necesita internet, asi que la app tiene que abrir sin red:
+// poner el reloj en hora funciona offline, solo el clima requiere salir.
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', async () => {
+    try {
+      const reg = await navigator.serviceWorker.register('./sw.js');
+      log('sys', 'modo offline listo');
+
+      // Un service worker nuevo se queda en espera hasta que se cierran las
+      // pestañas viejas; aqui se le pide el relevo y se recarga una sola vez.
+      reg.addEventListener('updatefound', () => {
+        const nuevo = reg.installing;
+        nuevo?.addEventListener('statechange', () => {
+          if (nuevo.state === 'installed' && navigator.serviceWorker.controller) {
+            log('sys', 'version nueva descargada, aplicando');
+            nuevo.postMessage('actualizar');
+          }
+        });
+      });
+    } catch (e) {
+      log('err', 'offline no disponible: ' + e.message, 'err');
+    }
+  });
+
+  let recargando = false;
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (recargando) return;
+    recargando = true;
+    location.reload();
+  });
+}
+
+// Chrome guarda el evento y muestra su propio banner; capturarlo permite poner
+// el boton dentro de la pagina en vez de depender del menu del navegador.
+let promptInstalar = null;
+window.addEventListener('beforeinstallprompt', ev => {
+  ev.preventDefault();
+  promptInstalar = ev;
+  $('instalar').hidden = false;
+  log('sys', 'la app se puede instalar en la pantalla de inicio');
+});
+
+$('instalar').onclick = async () => {
+  if (!promptInstalar) return;
+  $('instalar').disabled = true;
+  promptInstalar.prompt();
+  const { outcome } = await promptInstalar.userChoice;
+  log('sys', outcome === 'accepted' ? 'instalando' : 'instalacion cancelada');
+  promptInstalar = null;
+  $('instalar').hidden = true;
+};
+
+window.addEventListener('appinstalled', () => {
+  $('instalar').hidden = true;
+  log('sys', 'app instalada', 'ok');
+});
+
+// Sin red el clima falla, pero la hora no: conviene que se vea la diferencia.
+addEventListener('offline', () => log('sys', 'sin red, el clima no se podra consultar'));
+addEventListener('online',  () => log('sys', 'red restablecida', 'ok'));
+
 pintarGato();
 log('sys', 'listo, esperando conexion');
+if (!navigator.onLine) log('sys', 'sin red, el clima no se podra consultar');
 </script>
 </body>
 </html>

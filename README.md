@@ -96,7 +96,24 @@ https://alekey01.github.io/oled_i2c/
 ```
 
 Esa URL es HTTPS, así que se abre desde el celular sin la laptop de por medio.
-Conviene agregarla a la pantalla de inicio de Chrome para tenerla a un toque.
+
+### Instalarla como app
+
+La página es una PWA: al abrirla en Chrome de Android aparece el botón
+**Instalar app**, y queda con su ícono de BitCat, sin barra de direcciones.
+
+El service worker cachea el casco (HTML e iconos), así que **abre sin red**. El
+enlace BLE no usa internet: poner el reloj en hora funciona sin datos. Lo único
+que necesita conexión es el clima, porque sale a Open-Meteo — si no hay red la
+consola lo avisa y la hora se envía igual.
+
+Al publicar una versión nueva de `webapp/`, sube el número de `CACHE` en
+`webapp/sw.js`; ese cambio de nombre es lo que dispara el borrado del cache
+viejo. Los iconos se generan del mismo sprite del firmware:
+
+```bash
+python tools/gen_icons.py
+```
 
 ### Probar en local
 
@@ -144,4 +161,7 @@ hace falta configurar zona horaria en el firmware: el celular la trae puesta.
 | `main/font5x7.h` | Fuente pixel 5x7 (ASCII 0x20–0x5F, `` ` `` = grado), escalable |
 | `main/weather.c/.h` | Códigos WMO a texto corto |
 | `webapp/index.html` | Página de sincronización (Web Bluetooth) |
+| `webapp/manifest.json` | Manifiesto de la PWA (nombre, iconos, modo standalone) |
+| `webapp/sw.js` | Service worker: cachea el casco para que abra sin red |
 | `tools/gen_bitcat.py` | Genera el arte de BitCat. `--c` emite las tablas de `bitcat.c`, `--js` las de la página; sin argumentos imprime una vista previa |
+| `tools/gen_icons.py` | Genera los PNG de la PWA desde el mismo sprite, sin dependencias |
