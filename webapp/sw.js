@@ -7,7 +7,9 @@
  * Sube CACHE al cambiar cualquier archivo del casco: el nombre nuevo es lo que
  * dispara el borrado del anterior en activate.
  */
-const CACHE = 'bitcat-watch-v3';
+// Sube este numero al publicar: es lo que dispara el borrado del cache anterior.
+// Debe ir a la par con "version" en manifest.json, que es lo que ve el usuario.
+const CACHE = 'bitcat-watch-v1.0.0';
 
 const CASCO = [
   './',
@@ -48,6 +50,10 @@ self.addEventListener('fetch', ev => {
   // Open-Meteo y la geolocalizacion nunca se cachean: un clima viejo servido
   // desde disco seria peor que un error honesto.
   if (req.method !== 'GET' || new URL(req.url).origin !== self.location.origin) return;
+
+  // El firmware tampoco: medio mega que cambia en cada deploy no tiene nada que
+  // hacer en el cache, y servir una version vieja seria peor que no servir nada.
+  if (new URL(req.url).pathname.includes('/firmware/')) return;
 
   // Navegacion: red primero, para que un deploy nuevo se vea al recargar con
   // señal. Sin red, cae al casco cacheado.

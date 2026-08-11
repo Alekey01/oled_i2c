@@ -5,6 +5,10 @@ on:
     branches: [main]
     paths:
       - 'webapp/**'
+      - 'main/**'
+      - 'partitions.csv'
+      - 'sdkconfig.defaults'
+      - 'CMakeLists.txt'
       - '.github/workflows/pages.yml'
   workflow_dispatch:
 
@@ -27,9 +31,66 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # La clave privada se incrusta en el binario y nunca sale del reloj. Vive
+      # en el secreto OTA_PRIVATE_KEY del repositorio, no en git.
+      - name: Restaurar la clave privada del OTA
+        env:
+          CLAVE: ${{ secrets.OTA_PRIVATE_KEY }}
+        run: |
+          if [ -z "$CLAVE" ]; then
+            echo "Falta el secreto OTA_PRIVATE_KEY. Ver README, seccion OTA cifrado." >&2
+            exit 1
+          fi
+          printf '%s\n' "$CLAVE" > main/ota_private_key.pem
+
+      # Compilar aqui es lo que permite que la pagina ofrezca el firmware sin
+      # tener que llevar el .bin al celular a mano.
+      - name: Compilar el firmware
+        uses: espressif/esp-idf-ci-action@v1
+        with:
+          esp_idf_version: v5.5.4
+          target: esp32s3
+          path: '.'
+
+      - name: Cifrar y empaquetar el firmware junto a la pagina
+        run: |
+          pip install --quiet cryptography
+          mkdir -p webapp/firmware
+
+          # Lo que se publica es texto cifrado: descargarlo no sirve de nada sin
+          # la clave privada, que solo esta dentro del reloj.
+          python3 managed_components/espressif__esp_encrypted_img/tools/esp_enc_img_gen.py \
+            encrypt build/oled_i2c.bin ota_public_key.pem webapp/firmware/oled_i2c.bin
+
+          python3 - <<'PY'
+          import hashlib, json, os
+          from datetime import datetime, timezone
+
+          datos = open('webapp/firmware/oled_i2c.bin', 'rb').read()
+
+          # La pagina compara este sha256 con lo que descarga: una descarga a
+          # medias no debe llegar nunca a escribirse en la flash del reloj.
+          meta = {
+              'archivo': 'oled_i2c.bin',
+              'version': open('version.txt').read().strip(),
+              'bytes': len(datos),
+              'sha256': hashlib.sha256(datos).hexdigest(),
+              'commit': os.environ['GITHUB_SHA'][:7],
+              'fecha': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
+          }
+          with open('webapp/firmware/firmware.json', 'w') as f:
+              json.dump(meta, f, indent=2)
+          print(json.dumps(meta, indent=2))
+          PY
+
+      # La clave no debe acabar en el artefacto que se publica en la web.
+      - name: Borrar la clave privada
+        if: always()
+        run: rm -f main/ota_private_key.pem
+
       - uses: actions/configure-pages@v5
 
-      # Solo se sube webapp/, no el firmware.
+      # Solo se sube webapp/, ya con el firmware dentro.
       - uses: actions/upload-pages-artifact@v3
         with:
           path: webapp

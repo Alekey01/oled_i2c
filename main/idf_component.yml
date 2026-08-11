@@ -1,0 +1,6 @@
+dependencies:
+  idf:
+    version: ">=5.0"
+  # Descifra la imagen sobre la marcha, trozo a trozo, con una clave RSA que solo
+  # existe dentro del reloj. Lo que se publica en la web es texto cifrado.
+  espressif/esp_encrypted_img: "^2.2.0"

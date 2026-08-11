@@ -123,6 +123,11 @@
   }
   #progreso[hidden] { display: none; }
   #barra { height: 100%; width: 0; background: var(--acc); }
+  #pie {
+    margin: 1.2rem 0 0; text-align: center;
+    font-size: 10px; letter-spacing: .18em; text-transform: uppercase;
+    color: var(--dim);
+  }
 
   /* --- consola --- */
   h2 {
@@ -158,7 +163,6 @@
 </header>
 
 <button id="primario">Conectar</button>
-<button id="reenviar" class="sec" disabled>Reenviar ahora</button>
 <button id="instalar" class="sec" hidden>Instalar app</button>
 
 <dl>
@@ -170,12 +174,16 @@
 </dl>
 
 <h2>FIRMWARE</h2>
-<input type="file" id="archivo" accept=".bin" disabled>
+<dl>
+  <div class="fila"><dt>En el reloj</dt><dd id="vReloj">--</dd></div>
+  <div class="fila"><dt>Publicada</dt><dd id="vPublicada">--</dd></div>
+</dl>
 <div id="progreso" hidden><div id="barra"></div></div>
-<button id="actualizar" class="sec" disabled>Actualizar reloj</button>
+<button id="remoto" disabled>Actualizar</button>
 
 <h2>ESTADO DEL DISPOSITIVO</h2>
 <div id="consola" role="log" aria-live="polite"></div>
+<p id="pie">BitCat Watch</p>
 
 <script>
 const SVC  = '5c8b0001-7a2e-4f1d-9c3a-1b2d4e6f8a90';
@@ -183,6 +191,11 @@ const CHR_TIME     = '5c8b0002-7a2e-4f1d-9c3a-1b2d4e6f8a90';
 const CHR_WEATHER  = '5c8b0003-7a2e-4f1d-9c3a-1b2d4e6f8a90';
 const CHR_OTA_CTRL = '5c8b0004-7a2e-4f1d-9c3a-1b2d4e6f8a90';
 const CHR_OTA_DATA = '5c8b0005-7a2e-4f1d-9c3a-1b2d4e6f8a90';
+const CHR_INFO     = '5c8b0006-7a2e-4f1d-9c3a-1b2d4e6f8a90';
+
+// Cabecera de esp_encrypted_img: el .bin publicado va cifrado, asi que ya no
+// empieza con el 0xE9 de las imagenes de ESP-IDF sino con este magico.
+const OTA_MAGIC = [0xCF, 0xB6, 0x88, 0x07];
 
 // Ordenes y estados del OTA, iguales a los de main/ble_sync.c.
 const OTA_START = 1, OTA_END = 2, OTA_ABORT = 3;
@@ -203,8 +216,10 @@ const RECONEXION_MAX_MS = 30000;
 const $ = id => document.getElementById(id);
 
 let device = null, chrTime = null, chrWeather = null;
-let chrOtaCtrl = null, chrOtaData = null;
+let chrOtaCtrl = null, chrOtaData = null, chrInfo = null;
 let otaEnCurso = false;
+let firmwarePublicado = null;
+let versionReloj = null;
 let desconexionManual = false;
 let timers = [];
 let esperaReconexion = RECONEXION_MIN_MS;
@@ -378,10 +393,8 @@ function setEstado(texto, clase) {
   tick = 0;
   pintarGato();
 
-  const listo = conectado();
-  $('reenviar').disabled = !listo || otaEnCurso;
   refrescarOtaUi();
-  if (listo) {
+  if (conectado()) {
     $('primario').textContent = 'Desconectar';
     $('primario').disabled = false;
   } else if (reconexionActiva) {
@@ -448,8 +461,11 @@ async function abrirGatt(etiqueta) {
   try {
     chrOtaCtrl = await service.getCharacteristic(CHR_OTA_CTRL);
     chrOtaData = await service.getCharacteristic(CHR_OTA_DATA);
+    chrInfo    = await service.getCharacteristic(CHR_INFO);
+    await leerVersionReloj();
   } catch (e) {
-    chrOtaCtrl = chrOtaData = null;
+    chrOtaCtrl = chrOtaData = chrInfo = null;
+    versionReloj = null;
     log('ota', 'este firmware no acepta actualizacion por bluetooth');
   }
 
@@ -609,7 +625,6 @@ async function sendWeather() {
 }
 
 async function syncAll() {
-  $('reenviar').disabled = true;
   setEstado('Sincronizando', 'wait');
   try {
     await sendTime();
@@ -628,17 +643,53 @@ async function syncAll() {
   }
 }
 
-$('reenviar').onclick = syncAll;
-
 /* ------------------------------------------------------------------- ota */
 
-function refrescarOtaUi() {
-  const disponible = conectado() && chrOtaCtrl && !otaEnCurso;
-  $('archivo').disabled = !disponible;
-  $('actualizar').disabled = !disponible || $('archivo').files.length === 0;
+// Compara "1.2.10" con "1.2.9" por numero, no por texto: alfabeticamente el 10
+// va antes que el 9 y la pagina diria que hay que retroceder.
+function versionMayor(a, b) {
+  const pa = String(a).split('.').map(Number);
+  const pb = String(b).split('.').map(Number);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const x = pa[i] || 0, y = pb[i] || 0;
+    if (x !== y) return x > y;
+  }
+  return false;
 }
 
-$('archivo').onchange = refrescarOtaUi;
+function refrescarOtaUi() {
+  const enlace = conectado() && chrOtaCtrl && !otaEnCurso;
+  const hayQue = firmwarePublicado && versionReloj
+              && versionMayor(firmwarePublicado.version, versionReloj.version);
+
+  $('vReloj').textContent = versionReloj
+    ? `${versionReloj.version} (${versionReloj.ranura})`
+    : '--';
+
+  if (!firmwarePublicado) {
+    $('remoto').textContent = 'Sin firmware publicado';
+    $('remoto').disabled = true;
+    return;
+  }
+  if (versionReloj && !hayQue) {
+    $('remoto').textContent = 'Ya esta al dia';
+    $('remoto').disabled = true;
+    return;
+  }
+  $('remoto').textContent = hayQue
+    ? `Actualizar a ${firmwarePublicado.version}`
+    : 'Actualizar';
+  $('remoto').disabled = !enlace;
+}
+
+async function leerVersionReloj() {
+  const v = await chrInfo.readValue();
+  const texto = new TextDecoder().decode(v).trim();   // "1.0.0 app0"
+  const [version, ranura] = texto.split(' ');
+  versionReloj = { version, ranura: ranura || '?' };
+  log('ota', `el reloj tiene la ${version} en ${versionReloj.ranura}`);
+  refrescarOtaUi();
+}
 
 // El navegador no expone writeValueWithResponse en versiones viejas.
 const escribirCon = (chr, d) =>
@@ -678,16 +729,14 @@ function pintarBarra(hecho, total) {
   return pct;
 }
 
-async function actualizarFirmware(file) {
+async function enviarFirmware(datos, nombre) {
   if (!chrOtaCtrl || !chrOtaData) throw new Error('el reloj no soporta ota');
   if (!conectado()) throw new Error('sin conexion');
 
-  const datos = new Uint8Array(await file.arrayBuffer());
-
-  // Toda imagen de ESP-IDF empieza con 0xE9. Sin esta comprobacion, elegir el
-  // archivo equivocado se descubriria despues de dos minutos de transferencia.
-  if (datos.length < 1024 || datos[0] !== 0xE9) {
-    throw new Error('ese archivo no es un firmware de esp32');
+  // La imagen va cifrada; su cabecera empieza por un magico fijo. Comprobarlo
+  // evita descubrir el archivo equivocado tras dos minutos de transferencia.
+  if (datos.length < 1024 || !OTA_MAGIC.every((b, i) => datos[i] === b)) {
+    throw new Error('eso no es una imagen cifrada de bitcat watch');
   }
 
   otaEnCurso = true;
@@ -695,7 +744,7 @@ async function actualizarFirmware(file) {
   setEstado('Actualizando', 'wait');
   $('progreso').hidden = false;
   pintarBarra(0, 1);
-  log('ota', `${file.name}, ${Math.round(datos.length / 1024)} KB`);
+  log('ota', `${nombre}, ${Math.round(datos.length / 1024)} KB`);
 
   await chrOtaCtrl.startNotifications();
   chrOtaCtrl.addEventListener('characteristicvaluechanged', onOtaNotify);
@@ -753,14 +802,14 @@ async function actualizarFirmware(file) {
   }
 }
 
-$('actualizar').onclick = async () => {
-  const file = $('archivo').files[0];
-  if (!file) return;
-
+// Envuelve a enviarFirmware con lo comun a los dos origenes: bloquear la UI,
+// registrar el fallo y devolver el estado al terminar.
+async function lanzarOta(obtenerDatos) {
   otaEnCurso = true;
   refrescarOtaUi();
   try {
-    await actualizarFirmware(file);
+    const { datos, nombre } = await obtenerDatos();
+    await enviarFirmware(datos, nombre);
   } catch (e) {
     log('err', 'ota: ' + e.message, 'err');
     $('progreso').hidden = true;
@@ -770,7 +819,64 @@ $('actualizar').onclick = async () => {
     // reconexion de siempre lo recupera sola.
     setEstado(conectado() ? 'Conectado' : 'Desconectado', conectado() ? 'on' : '');
   }
-};
+}
+
+/* ------------------------------------------------- firmware publicado */
+
+// El .bin viaja junto a la pagina, asi que se pide al mismo origen: no hay CORS
+// de por medio y no hace falta tener el archivo en el celular.
+async function buscarFirmwarePublicado() {
+  try {
+    const r = await fetch('./firmware/firmware.json', { cache: 'no-store' });
+    if (!r.ok) throw new Error('sin publicar');
+    firmwarePublicado = await r.json();
+  } catch (e) {
+    $('vPublicada').textContent = 'ninguna';
+    refrescarOtaUi();
+    return;
+  }
+
+  const f = new Date(firmwarePublicado.fecha);
+  $('vPublicada').textContent =
+    `${firmwarePublicado.version} (${f.toLocaleDateString()})`;
+  log('ota', `publicada la ${firmwarePublicado.version}, `
+            + `${Math.round(firmwarePublicado.bytes / 1024)} KB, `
+            + `commit ${firmwarePublicado.commit}`);
+  refrescarOtaUi();
+}
+
+// La version de la app sale del manifiesto, que ya se descarga igualmente: asi
+// solo hay un sitio donde tocarla al publicar.
+async function mostrarVersionApp() {
+  try {
+    const m = await (await fetch('./manifest.json')).json();
+    if (m.version) $('pie').textContent = `BitCat Watch · app ${m.version}`;
+  } catch (e) { /* da igual, es decorativo */ }
+}
+
+async function descargarFirmware() {
+  log('ota', 'descargando el firmware publicado');
+  const r = await fetch('./firmware/' + firmwarePublicado.archivo, { cache: 'no-store' });
+  if (!r.ok) throw new Error('no se pudo descargar: HTTP ' + r.status);
+
+  const datos = new Uint8Array(await r.arrayBuffer());
+  if (datos.length !== firmwarePublicado.bytes) {
+    throw new Error('la descarga vino incompleta');
+  }
+
+  // Una descarga corrupta no debe llegar nunca a escribirse en la flash, y a
+  // estas alturas comprobarlo cuesta milisegundos.
+  const hash = await crypto.subtle.digest('SHA-256', datos);
+  const hex = [...new Uint8Array(hash)].map(b => b.toString(16).padStart(2, '0')).join('');
+  if (hex !== firmwarePublicado.sha256) {
+    throw new Error('el sha256 no coincide, descarga corrupta');
+  }
+  log('ota', 'descarga verificada');
+
+  return { datos, nombre: firmwarePublicado.archivo };
+}
+
+$('remoto').onclick = () => lanzarOta(descargarFirmware);
 
 /* ------------------------------------------------------------------ pwa */
 
@@ -836,6 +942,8 @@ addEventListener('offline', () => log('sys', 'sin red, el clima no se podra cons
 addEventListener('online',  () => log('sys', 'red restablecida', 'ok'));
 
 pintarGato();
+buscarFirmwarePublicado();
+mostrarVersionApp();
 log('sys', 'listo, esperando conexion');
 if (!navigator.onLine) log('sys', 'sin red, el clima no se podra consultar');
 </script>

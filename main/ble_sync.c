@@ -1,6 +1,9 @@
+#include <stdio.h>
 #include <string.h>
 
+#include "esp_app_desc.h"
 #include "esp_log.h"
+#include "esp_ota_ops.h"
 #include "host/ble_hs.h"
 #include "host/util/util.h"
 #include "nimble/nimble_port.h"
@@ -23,6 +26,7 @@ static const ble_uuid128_t chr_time     = UUID128_APP(0x02, 0x00);
 static const ble_uuid128_t chr_weather  = UUID128_APP(0x03, 0x00);
 static const ble_uuid128_t chr_ota_ctrl = UUID128_APP(0x04, 0x00);
 static const ble_uuid128_t chr_ota_data = UUID128_APP(0x05, 0x00);
+static const ble_uuid128_t chr_info     = UUID128_APP(0x06, 0x00);
 
 /* Ordenes que acepta la caracteristica de control del OTA. */
 #define OTA_CMD_START  0x01   /* + uint32 tamano */
@@ -155,6 +159,31 @@ static int ota_ctrl_write(const uint8_t *buf, uint16_t len)
 
 /* ------------------------------------------------------------------ GATT */
 
+/*
+ * Version y ranura activa, en texto: "1.0.0 app0". Es lo que deja a la pagina
+ * decidir si hay algo que actualizar en vez de mandar medio mega a ciegas.
+ */
+static int chr_info_read(uint16_t conn, uint16_t attr, struct ble_gatt_access_ctxt *ctxt, void *arg)
+{
+    if (ctxt->op != BLE_GATT_ACCESS_OP_READ_CHR) {
+        return BLE_ATT_ERR_UNLIKELY;
+    }
+
+    const esp_app_desc_t *desc = esp_app_get_description();
+    const esp_partition_t *run = esp_ota_get_running_partition();
+
+    char info[64];
+    int n = snprintf(info, sizeof(info), "%s %s", desc->version, run->label);
+    if (n < 0) {
+        return BLE_ATT_ERR_UNLIKELY;
+    }
+    if (n >= (int)sizeof(info)) {
+        n = sizeof(info) - 1;
+    }
+
+    return os_mbuf_append(ctxt->om, info, n) == 0 ? 0 : BLE_ATT_ERR_INSUFFICIENT_RES;
+}
+
 static int chr_write(uint16_t conn, uint16_t attr, struct ble_gatt_access_ctxt *ctxt, void *arg)
 {
     if (ctxt->op != BLE_GATT_ACCESS_OP_WRITE_CHR) {
@@ -276,6 +305,11 @@ static const struct ble_gatt_svc_def gatt_svcs[] = {
                 .uuid = &chr_ota_data.u,
                 .access_cb = chr_write,
                 .flags = BLE_GATT_CHR_F_WRITE_NO_RSP,
+            },
+            {
+                .uuid = &chr_info.u,
+                .access_cb = chr_info_read,
+                .flags = BLE_GATT_CHR_F_READ,
             },
             {0},
         },

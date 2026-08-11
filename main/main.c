@@ -15,8 +15,10 @@
 #include <time.h>
 
 #include "driver/gpio.h"
+#include "esp_app_desc.h"
 #include "esp_log.h"
 #include "esp_mac.h"
+#include "esp_ota_ops.h"
 #include "esp_pm.h"
 #include "esp_random.h"
 #include "esp_sleep.h"
@@ -991,8 +993,30 @@ void app_main(void)
                                  CONFIG_APP_OLED_ADDR,
                                  400000,
                                  CONFIG_APP_OLED_HEIGHT));
-    ssd1306_text(&s_oled, 0, 8, "INICIANDO BLE...", 1, true);
-    ssd1306_flush(&s_oled);
+    /*
+     * Pantalla de arranque con la ranura y la hora de compilacion. Es la unica
+     * forma comoda de comprobar que un OTA entro: tras actualizar tiene que
+     * cambiar de app0 a app1 (o al reves) y la hora tiene que ser la nueva. Va
+     * en el OLED y no en el log porque con light sleep la consola USB no es
+     * fiable, que es justo la configuracion normal del reloj.
+     */
+    {
+        const esp_app_desc_t *desc = esp_app_get_description();
+        const esp_partition_t *run = esp_ota_get_running_partition();
+        /* Holgado a proposito: version[32] y label[17] no caben en menos, y el
+           compilador trata el truncado posible como error. En pantalla son
+           "V1.0.0  app0", doce caracteres. */
+        char linea[56];
+
+        text_center(2, "BITCAT WATCH", 1);
+        snprintf(linea, sizeof(linea), "V%s  %s", desc->version, run->label);
+        text_center(14, linea, 1);
+        ssd1306_text(&s_oled, 0, 25, "INICIANDO BLE...", 1, true);
+        ssd1306_flush(&s_oled);
+
+        ESP_LOGI(TAG, "version %s desde '%s', compilado %s %s",
+                 desc->version, run->label, desc->date, desc->time);
+    }
 
     /* El UUID del servicio es el mismo en todas las unidades: identifica al
        modelo, no al aparato. Para poder distinguirlos en el selector del celular

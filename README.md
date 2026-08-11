@@ -125,9 +125,9 @@ detalle de cada operación.
 
 ### Publicarla (recomendado)
 
-`.github/workflows/pages.yml` sube la carpeta `webapp/` a GitHub Pages en cada
-push a `main`. Solo hay que activarlo una vez en **Settings → Pages → Source:
-GitHub Actions**. Después queda en:
+`.github/workflows/pages.yml` compila el firmware y sube la carpeta `webapp/` —ya
+con el `.bin` dentro— a GitHub Pages en cada push a `main`. Solo hay que activarlo
+una vez en **Settings → Pages → Source: GitHub Actions**. Después queda en:
 
 ```
 https://alekey01.github.io/oled_i2c/
@@ -173,8 +173,20 @@ adb reverse tcp:8000 tcp:8000
 
 ## Actualizar el firmware por Bluetooth
 
-En la página, sección **FIRMWARE**: eliges `build/oled_i2c.bin` y le das a
-*Actualizar reloj*. No hace falta cable ni abrir la caja.
+En la página, sección **FIRMWARE**, botón **Actualizar**. No hace falta cable, ni
+abrir la caja, ni tener el `.bin` en el celular.
+
+El workflow de GitHub Pages **compila el firmware** con `esp-idf-ci-action` y
+publica `oled_i2c.bin` junto a la página, con un `firmware.json` que lleva
+tamaño, sha256, commit y fecha. La página lo pide a su propio origen —sin CORS de
+por medio—, comprueba el hash y lo manda por BLE. Lo que ofrece siempre es el
+último commit de `main`.
+
+`webapp/firmware/` lo genera el CI y está en `.gitignore`: el binario no vive en
+el repositorio.
+
+La página lee la versión del reloj por BLE y la compara con la publicada. Si
+coinciden, el botón dice *Ya está al día* y no deja mandar nada.
 
 Cómo funciona:
 
@@ -189,11 +201,73 @@ Cómo funciona:
    Si se cuelga antes, el bootloader vuelve solo a la anterior en el siguiente
    reset (`CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE`).
 
-La página comprueba que el archivo empiece con `0xE9` — el número mágico de las
-imágenes de ESP-IDF — antes de mandar nada, para no descubrir el error después
-de dos minutos de transferencia.
-
 Mientras dura, el OLED muestra una barra de progreso en lugar de la vista.
+
+## OTA cifrado
+
+**El `.bin` publicado no es legible.** Va cifrado con
+[`esp_encrypted_img`](https://components.espressif.com/components/espressif/esp_encrypted_img):
+una clave AES-GCM aleatoria por imagen, envuelta con **RSA-3072**. La clave
+privada está incrustada en el firmware del reloj y no viaja nunca — ni por el
+aire, ni por la página. Descargar el archivo de GitHub Pages no sirve de nada.
+
+Conviene decirlo claro: **cifrar y descifrar en el navegador no habría servido de
+nada.** La clave tendría que estar en el JavaScript, que es público. Solo protege
+si el único que puede descifrar es el reloj.
+
+También conviene decir lo que **no** protege: si el repositorio es público, el
+código fuente ya lo es, y cualquiera puede compilar su propio binario. Esto evita
+que se distribuya *tu* imagen, no que se reconstruya.
+
+### Generar el par de claves
+
+Una vez, y guárdalo bien: **si pierdes la clave privada, los relojes ya
+flasheados no aceptarán ninguna actualización más.**
+
+```bash
+python managed_components/espressif__esp_encrypted_img/tools/esp_enc_img_gen.py --generate_rsa_key
+```
+
+Deja `rsa_priv_key.pem` y `rsa_pub_key.pem` en la raíz. Colócalos así:
+
+| Archivo | Dónde va | En git |
+|---|---|---|
+| `main/ota_private_key.pem` | se incrusta en el firmware al compilar | **no**, está en `.gitignore` |
+| `ota_public_key.pem` | lo usa el CI para cifrar | sí, es pública por diseño |
+
+Y añade el contenido de la privada como secreto **`OTA_PRIVATE_KEY`** en
+*Settings → Secrets and variables → Actions*. El workflow la escribe en disco
+para compilar y la borra al terminar, pase lo que pase.
+
+Sin ese archivo la compilación falla — es deliberado: es preferible a producir un
+firmware que no pueda actualizarse nunca.
+
+## Versiones
+
+| Qué | Dónde se sube |
+|---|---|
+| Firmware | `version.txt` en la raíz. ESP-IDF lo mete en el descriptor de la app |
+| Página | `"version"` en `webapp/manifest.json` y `CACHE` en `webapp/sw.js` |
+
+La del firmware sale en la pantalla de arranque (`V1.0.0  app0`), se lee por BLE
+y viaja en `firmware.json`. La de la página se muestra al pie.
+
+Los dos sitios de la página van a la par a propósito: `CACHE` es lo que invalida
+el service worker, y si no lo subes la app instalada seguirá sirviendo la
+anterior.
+
+**Cómo comprobar que entró:** la pantalla de arranque muestra la ranura activa y
+la hora de compilación (`app0  15:23:11`). Tras un OTA correcto tiene que haber
+cambiado de `app0` a `app1`, o al revés. Va en el OLED y no en el log porque con
+light sleep la consola USB no es fiable.
+
+**No apagues el reloj durante los primeros 30 segundos** tras actualizar. Es la
+ventana en la que el firmware nuevo todavía no se ha confirmado: un corte ahí
+hace que el bootloader vuelva a la versión anterior, que es exactamente para lo
+que está el rollback.
+
+Si usas un archivo propio, es `build/oled_i2c.bin`, no `bootloader.bin` ni
+`partition-table.bin`. Esos dos no cambian y el OTA no los toca.
 
 ## Protocolo BLE
 
@@ -204,7 +278,8 @@ Servicio `5c8b0001-7a2e-4f1d-9c3a-1b2d4e6f8a90`, todo en little-endian:
 | `…0002-…` hora | escritura | 8 | `uint32` epoch UTC · `int32` offset UTC en segundos |
 | `…0003-…` clima | escritura | 6 | `int16` temperatura ×10 · `uint8` humedad % · `uint8` código WMO · `uint8` viento km/h · `uint8` dirección en grados÷2 |
 | `…0004-…` control OTA | escritura + notificación | 1 o 5 | orden: `01`+`uint32` tamaño = iniciar, `02` = terminar, `03` = cancelar |
-| `…0005-…` datos OTA | escritura sin respuesta | ≤ 512 | trozo de la imagen |
+| `…0005-…` datos OTA | escritura sin respuesta | ≤ 512 | trozo de la imagen cifrada |
+| `…0006-…` info | lectura | texto | versión y ranura activa, p. ej. `1.0.0 app0` |
 
 Los dos bytes de viento son opcionales: una escritura de 4 bytes también se acepta
 y simplemente no muestra el viento.
@@ -225,8 +300,10 @@ hace falta configurar zona horaria en el firmware: el celular la trae puesta.
 | `main/weather_icon.c` | Iconos de clima de 30x30 px y rosa de los vientos |
 | `main/bitcat.c/.h` | BitCat 31x24: cinco poses, seis expresiones y cuatro accesorios, todos combinables |
 | `main/ble_sync.c/.h` | Servidor GATT con NimBLE (anuncio, conexión, escrituras, transporte del OTA) |
-| `main/ota.c/.h` | Escritura en la ranura libre, validación y cambio de arranque |
+| `main/ota.c/.h` | Descifrado de la imagen, escritura en la ranura libre y cambio de arranque |
 | `partitions.csv` | Dos ranuras de app de 2 MB, necesarias para el OTA |
+| `version.txt` | Versión del firmware |
+| `ota_public_key.pem` | Clave pública con la que el CI cifra la imagen |
 | `main/ssd1306.c/.h` | Driver SSD1306 sobre `driver/i2c_master`, framebuffer y primitivas |
 | `main/font5x7.h` | Fuente pixel 5x7 (ASCII 0x20–0x5F, `` ` `` = grado), escalable |
 | `main/weather.c/.h` | Códigos WMO a texto corto |
