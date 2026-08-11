@@ -1,4 +1,4 @@
-idf_component_register(SRCS "crab.c" "weather_icon.c" "main.c"
+idf_component_register(SRCS "bitcat.c" "weather_icon.c" "main.c"
                             "ssd1306.c"
                             "ble_sync.c"
                             "weather.c"

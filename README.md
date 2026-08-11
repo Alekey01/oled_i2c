@@ -3,16 +3,20 @@
 Reloj con estética de 8 bits en un SSD1306 de 0.91" (128x32). **La hora y el clima
 llegan por Bluetooth LE desde el celular: no usa WiFi ni credenciales de red.**
 
-Tres vistas que rotan con el **botón BOOT** (GPIO 0):
+La mascota es **BitCat**. Cuatro vistas que rotan con el **botón BOOT** (GPIO 0):
 
 ```
-VISTA RELOJ                       VISTA CLIMA                VISTA CANGREJO
-        HH:MM                      (icono)   22`C             (criatura 31x22
-   [#][ ][#][#][ ][ ][#][ ]         30x30    64%  18KMH NE     caminando y
-        JUE 07 AGO                    px     PARC NUBLADO      saludando)
+RELOJ                      CLIMA                     BITCAT              PASEO
+      HH:MM                (icono)  22`C        15:12      22`C      (BitCat cruza
+ [#][ ][#][#][ ][ ][#][ ]   30x30   64% 18KMH             .-.         la pantalla
+      JUE 07 AGO             px     PARC NUBLADO         (o.o)        y a veces
+                                                          BitCat       saluda)
 ```
 
 - **Segundos en 8 bits**: fila de 8 casillas, MSB a la izquierda; llena = 1, hueca = 0.
+- **Vista BitCat**: el gato al centro con la hora arriba a la izquierda y el clima
+  arriba a la derecha. Su expresión cambia sola cada 15 minutos, al azar entre
+  normal, feliz, sorpresa, dormido, enojado y amor.
 - **Iconos**: sol, luna (de noche), nube, sol tras nube, lluvia, chubasco, nieve,
   niebla y tormenta, dibujados con primitivas — sin bitmaps en flash.
 - **Runa de Bluetooth** arriba a la izquierda de la vista del reloj mientras el
@@ -42,7 +46,7 @@ duerme, así que el ahorro es bueno pero no tan profundo como con un 32 kHz.
 > Con el light sleep activo la consola USB no es confiable. Para depurar,
 > desactiva `APP_LIGHT_SLEEP` en `menuconfig`.
 
-En la vista del cangrejo el refresco sube a 80 ms: es la vista más cara en CPU y
+En la vista del paseo el refresco sube a 80 ms: es la vista más cara en CPU y
 en bus I2C.
 
 ## Conexiones
@@ -72,8 +76,8 @@ Ajustes opcionales (nombre BLE, GPIOs, dirección y alto del panel) en
 pide el clima de tu ubicación a [Open-Meteo](https://open-meteo.com) y lo escribe
 por BLE. No hay que instalar nada.
 
-El indicador de estado es el mismo cangrejo del firmware, dibujado en un canvas
-con los sprites idénticos a `main/crab.c`: camina mientras el enlace trabaja y
+El indicador de estado es el mismo BitCat del firmware, dibujado en un canvas
+con los sprites idénticos a `main/bitcat.c`: camina mientras el enlace trabaja y
 saluda con la cara feliz cuando está conectado. Abajo hay una consola con el
 detalle de cada operación.
 
@@ -81,14 +85,36 @@ detalle de cada operación.
 > página **debe servirse por HTTPS o desde localhost** — abrirla con `file://`
 > no funciona, el navegador bloquea la API.
 
-La forma más simple es publicarla en GitHub Pages (o cualquier hosting estático)
-y abrir esa URL en el celular. Para probar desde la PC:
+### Publicarla (recomendado)
+
+`.github/workflows/pages.yml` sube la carpeta `webapp/` a GitHub Pages en cada
+push a `main`. Solo hay que activarlo una vez en **Settings → Pages → Source:
+GitHub Actions**. Después queda en:
+
+```
+https://alekey01.github.io/oled_i2c/
+```
+
+Esa URL es HTTPS, así que se abre desde el celular sin la laptop de por medio.
+Conviene agregarla a la pantalla de inicio de Chrome para tenerla a un toque.
+
+### Probar en local
+
+Desde la PC:
 
 ```bash
 python -m http.server 8000 --directory webapp
 ```
 
 y abrir `http://localhost:8000` en Chrome de escritorio.
+
+Desde el celular sin publicar nada, con el cable USB y depuración USB activa —
+`adb reverse` hace que el `localhost` del teléfono apunte a la PC, y `localhost`
+sí cuenta como origen seguro:
+
+```bash
+adb reverse tcp:8000 tcp:8000
+```
 
 ## Protocolo BLE
 
@@ -110,11 +136,12 @@ hace falta configurar zona horaria en el firmware: el celular la trae puesta.
 
 | Archivo | Qué hace |
 |---------|----------|
-| `main/main.c` | Arranque, las tres vistas, botón, ahorro de energía, estado compartido |
+| `main/main.c` | Arranque, las cuatro vistas, botón, ahorro de energía, estado compartido |
 | `main/weather_icon.c` | Iconos de clima de 30x30 px y rosa de los vientos |
-| `main/crab.c/.h` | Criatura pixel-art de 31x22: dos cuadros de caminata y dos de saludo |
+| `main/bitcat.c/.h` | BitCat 31x24: cinco poses y seis expresiones combinables |
 | `main/ble_sync.c/.h` | Servidor GATT con NimBLE (anuncio, conexión, escrituras) |
 | `main/ssd1306.c/.h` | Driver SSD1306 sobre `driver/i2c_master`, framebuffer y primitivas |
 | `main/font5x7.h` | Fuente pixel 5x7 (ASCII 0x20–0x5F, `` ` `` = grado), escalable |
 | `main/weather.c/.h` | Códigos WMO a texto corto |
 | `webapp/index.html` | Página de sincronización (Web Bluetooth) |
+| `tools/gen_bitcat.py` | Genera el arte de BitCat. `--c` emite las tablas de `bitcat.c`, `--js` las de la página; sin argumentos imprime una vista previa |

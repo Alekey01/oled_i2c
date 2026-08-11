@@ -25,8 +25,8 @@
 #include "freertos/task.h"
 #include "nvs_flash.h"
 
+#include "bitcat.h"
 #include "ble_sync.h"
-#include "crab.h"
 #include "ssd1306.h"
 #include "weather.h"
 
@@ -35,21 +35,25 @@ static const char *TAG = "reloj8b";
 typedef enum {
     VIEW_CLOCK = 0,
     VIEW_WEATHER,
-    VIEW_CRAB,
+    VIEW_CAT,      /* BitCat en medio, hora y clima chicos arriba */
+    VIEW_WALK,     /* BitCat cruzando la pantalla */
     VIEW_COUNT,
 } view_t;
 
 /* Refresco rapido solo en la vista animada; las otras no lo necesitan. */
 #define REFRESH_MS_STATIC 250
-#define REFRESH_MS_CRAB   80
-#define CRAB_STEP_PX      2
+#define REFRESH_MS_WALK   80
+#define WALK_STEP_PX      2
 
-/* Saludo: dura 24 ciclos (~2 s) y el brazo sube y baja cada 3 (~240 ms).
-   La probabilidad se evalua por ciclo, solo mientras el cangrejo se ve entero;
+/* Saludo: dura 24 ciclos (~2 s) y la manita sube y baja cada 3 (~240 ms).
+   La probabilidad se evalua por ciclo, solo mientras BitCat se ve entero;
    con 2% sale un saludo en algo mas de la mitad de las pasadas. */
-#define CRAB_WAVE_TICKS   24
-#define CRAB_WAVE_FLAP    3
-#define CRAB_WAVE_CHANCE  2
+#define WAVE_TICKS   24
+#define WAVE_FLAP    3
+#define WAVE_CHANCE  2
+
+/* Cada cuanto cambia de humor la vista del gato. */
+#define EXPR_PERIODO_US (15LL * 60 * 1000000)
 
 static ssd1306_t s_oled;
 static SemaphoreHandle_t s_mux;        /* estado compartido */
@@ -71,10 +75,12 @@ static TaskHandle_t s_button_h;
 static volatile bool s_screen_on = true;
 static volatile int64_t s_last_activity_us;
 
-/* Animacion del cangrejo; solo la toca la tarea de pantalla. */
-static int s_crab_x = -CRAB_W;
-static int s_crab_tick;
-static int s_crab_wave_left;   /* ciclos que le quedan al saludo, 0 = caminando */
+/* Animacion del paseo y humor del gato; solo los toca la tarea de pantalla. */
+static int s_walk_x = -BITCAT_W;
+static int s_walk_tick;
+static int s_wave_left;        /* ciclos que le quedan al saludo, 0 = caminando */
+static bitcat_expr_t s_expr = BITCAT_NORMAL;
+static int64_t s_expr_us;
 
 static const char *DIAS[7]   = {"DOM", "LUN", "MAR", "MIE", "JUE", "VIE", "SAB"};
 static const char *MESES[12] = {"ENE", "FEB", "MAR", "ABR", "MAY", "JUN",
@@ -214,45 +220,91 @@ static void draw_weather(const weather_t *w, const struct tm *t, bool have_time)
     ssd1306_text(&s_oled, 34, 25, buf, 1, true);
 }
 
-/* Vista 3: el cangrejo cruza la pantalla de izquierda a derecha. */
-static void draw_crab(void)
+/*
+ * Vista 3: BitCat en medio, con la hora chica arriba a la izquierda y el clima
+ * arriba a la derecha. El humor cambia solo cada 15 minutos.
+ */
+static void actualizar_humor(void)
 {
-    /* El sprite ocupa y=3..24 y el suelo va justo debajo, para que las patas
-       largas de cada cuadro lo toquen y las cortas queden levantadas. */
+    int64_t ahora = esp_timer_get_time();
+    if (s_expr_us != 0 && ahora - s_expr_us < EXPR_PERIODO_US) {
+        return;
+    }
+    /* Se descarta la repetida: si sale la misma, el cambio seria invisible. */
+    bitcat_expr_t nueva;
+    do {
+        nueva = esp_random() % BITCAT_EXPR_COUNT;
+    } while (nueva == s_expr);
+
+    s_expr = nueva;
+    s_expr_us = ahora;
+    ESP_LOGI(TAG, "humor: %s", bitcat_expr_nombre(s_expr));
+}
+
+static void draw_cat(const weather_t *w, const struct tm *t, bool have_time)
+{
+    char buf[16];
+
+    actualizar_humor();
+
+    if (have_time) {
+        snprintf(buf, sizeof(buf), "%02d:%02d", t->tm_hour, t->tm_min);
+    } else {
+        snprintf(buf, sizeof(buf), "--:--");
+    }
+    ssd1306_text(&s_oled, 0, 0, buf, 1, true);
+
+    if (w->valid) {
+        snprintf(buf, sizeof(buf), "%d`C", (int)(w->temp_c + (w->temp_c >= 0 ? 0.5f : -0.5f)));
+    } else {
+        snprintf(buf, sizeof(buf), "--`C");
+    }
+    ssd1306_text(&s_oled, SSD1306_WIDTH - ssd1306_text_width(buf, 1) + 1, 0, buf, 1, true);
+
+    /* 24 px de alto a partir de y=8 llegan justo al borde inferior. */
+    bitcat_draw(&s_oled, (SSD1306_WIDTH - BITCAT_W) / 2, 8, BITCAT_SIT, s_expr);
+}
+
+/* Vista 4: BitCat cruza la pantalla de izquierda a derecha. */
+static void draw_walk(void)
+{
+    /* El sprite ocupa y=4..27 y el suelo va justo debajo de las patas. */
     for (int x = 0; x < SSD1306_WIDTH; x += 4) {
-        ssd1306_fill_rect(&s_oled, x, 25, 2, 1, true);
+        ssd1306_fill_rect(&s_oled, x, 28, 2, 1, true);
     }
 
-    crab_frame_t frame;
-    if (s_crab_wave_left > 0) {
-        frame = (s_crab_tick / CRAB_WAVE_FLAP) % 2 ? CRAB_WAVE_B : CRAB_WAVE_A;
+    bitcat_pose_t pose;
+    if (s_wave_left > 0) {
+        pose = (s_walk_tick / WAVE_FLAP) % 2 ? BITCAT_WAVE_B : BITCAT_WAVE_A;
     } else {
-        frame = (s_crab_tick / 2) % 2 ? CRAB_WALK_B : CRAB_WALK_A;
+        pose = (s_walk_tick / 2) % 2 ? BITCAT_WALK_B : BITCAT_WALK_A;
     }
-    crab_draw(&s_oled, s_crab_x, 3, frame);
+    /* Al saludar pone cara feliz; caminando va normal. */
+    bitcat_draw(&s_oled, s_walk_x, 4, pose,
+                s_wave_left > 0 ? BITCAT_FELIZ : BITCAT_NORMAL);
 }
 
 /* Avanza la animacion un paso. Se llama solo desde la tarea de pantalla. */
-static void crab_step(void)
+static void walk_step(void)
 {
-    s_crab_tick++;
+    s_walk_tick++;
 
-    if (s_crab_wave_left > 0) {
-        s_crab_wave_left--;   /* saludando: se queda quieto */
+    if (s_wave_left > 0) {
+        s_wave_left--;   /* saludando: se queda quieto */
         return;
     }
 
-    s_crab_x += CRAB_STEP_PX;
-    if (s_crab_x > SSD1306_WIDTH) {
-        s_crab_x = -CRAB_W;
+    s_walk_x += WALK_STEP_PX;
+    if (s_walk_x > SSD1306_WIDTH) {
+        s_walk_x = -BITCAT_W;
         return;
     }
 
     /* Solo se detiene a saludar cuando se ve completo, para que no salude a
        medias fuera del borde. */
-    bool fully_visible = s_crab_x >= 0 && s_crab_x + CRAB_W <= SSD1306_WIDTH;
-    if (fully_visible && (esp_random() % 100) < CRAB_WAVE_CHANCE) {
-        s_crab_wave_left = CRAB_WAVE_TICKS;
+    bool completo = s_walk_x >= 0 && s_walk_x + BITCAT_W <= SSD1306_WIDTH;
+    if (completo && (esp_random() % 100) < WAVE_CHANCE) {
+        s_wave_left = WAVE_TICKS;
     }
 }
 
@@ -281,8 +333,11 @@ static void render(void)
     case VIEW_WEATHER:
         draw_weather(&w, &tm_now, have_time);
         break;
-    case VIEW_CRAB:
-        draw_crab();
+    case VIEW_CAT:
+        draw_cat(&w, &tm_now, have_time);
+        break;
+    case VIEW_WALK:
+        draw_walk();
         break;
     default:
         draw_clock(&tm_now, have_time);
@@ -334,10 +389,10 @@ static void display_task(void *arg)
            estado de la animacion vive en esta tarea: nadie mas lo toca. */
         if (s_view != last) {
             last = s_view;
-            if (last == VIEW_CRAB) {
-                s_crab_x = -CRAB_W;
-                s_crab_tick = 0;
-                s_crab_wave_left = 0;
+            if (last == VIEW_WALK) {
+                s_walk_x = -BITCAT_W;
+                s_walk_tick = 0;
+                s_wave_left = 0;
             }
         }
 
@@ -360,10 +415,10 @@ static void display_task(void *arg)
         bool encendiendo = !s_screen_on;
 
         uint32_t espera_ms;
-        if (s_view == VIEW_CRAB) {
-            crab_step();
+        if (s_view == VIEW_WALK) {
+            walk_step();
             render();
-            espera_ms = REFRESH_MS_CRAB;
+            espera_ms = REFRESH_MS_WALK;
         } else {
             render();
             espera_ms = ms_al_proximo_segundo();
