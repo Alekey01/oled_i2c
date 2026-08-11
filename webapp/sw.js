@@ -1,4 +1,4 @@
-/* Service worker de RELOJ8BIT.
+/* Service worker de BitCat Watch.
  *
  * El unico objetivo es que la app abra sin red: el enlace BLE con el reloj no
  * necesita internet, asi que poner el reloj en hora tiene que funcionar aunque
@@ -7,7 +7,7 @@
  * Sube CACHE al cambiar cualquier archivo del casco: el nombre nuevo es lo que
  * dispara el borrado del anterior en activate.
  */
-const CACHE = 'reloj8bit-v1';
+const CACHE = 'bitcat-watch-v2';
 
 const CASCO = [
   './',

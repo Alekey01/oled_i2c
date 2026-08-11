@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>RELOJ8BIT</title>
+<title>BitCat Watch</title>
 <link rel="manifest" href="./manifest.json">
 <link rel="icon" href="./icon-192.png" type="image/png">
 <link rel="apple-touch-icon" href="./apple-touch-icon.png">
@@ -18,7 +18,10 @@
     --line: #14130e;
     --panel: #efeee7;
     --paper: #faf9f4;
-    --acc: #c9663f;
+    --acc: #3d6fb4;
+    /* Texto sobre el acento: el azul claro y el oscuro necesitan tintas opuestas
+       para que el boton siga siendo legible en los dos temas. */
+    --acc-fg: #faf9f4;
     --ok: #2d7a4c;
     --err: #b8433a;
   }
@@ -29,7 +32,8 @@
       --line: #eceae4;
       --panel: #1a1a19;
       --paper: #0e0e0d;
-      --acc: #e08a67;
+      --acc: #6fa8e0;
+      --acc-fg: #14130e;
       --ok: #6fc48f;
       --err: #e58279;
     }
@@ -74,7 +78,7 @@
     letter-spacing: .14em; text-transform: uppercase;
     width: 100%; padding: .8rem; margin-bottom: .85rem;
     border: 2px solid var(--line); border-radius: 0;
-    background: var(--acc); color: #14130e;
+    background: var(--acc); color: var(--acc-fg);
     box-shadow: 4px 4px 0 var(--line);
     cursor: pointer;
   }
@@ -119,7 +123,7 @@
 </head>
 <body>
 
-<h1>RELOJ8BIT</h1>
+<h1>BITCAT WATCH</h1>
 
 <header>
   <canvas id="gato" aria-hidden="true"></canvas>
@@ -285,7 +289,7 @@ let cuadros = GATO_CAMINA, animado = false, tick = 0;
 function pintarGato() {
   const f = cuadros[animado ? tick % cuadros.length : 0];
   ctx2d.clearRect(0, 0, cv.width, cv.height);
-  ctx2d.fillStyle = getComputedStyle(document.body).getPropertyValue('--acc').trim() || '#c9663f';
+  ctx2d.fillStyle = getComputedStyle(document.body).getPropertyValue('--acc').trim() || '#3d6fb4';
   for (let r = 0; r < GATO_H; r++) {
     for (let c = 0; c < GATO_W; c++) {
       if (f[r][c] === '#') ctx2d.fillRect(c * PX, r * PX, PX, PX);

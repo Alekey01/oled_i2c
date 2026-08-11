@@ -17,7 +17,7 @@ from gen_bitcat import POSES, estampar, W, H  # noqa: E402
 SALIDA = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'webapp')
 
 FONDO = (0x14, 0x13, 0x0e)   # --fg del tema oscuro
-GATO  = (0xc9, 0x66, 0x3f)   # --acc
+GATO  = (0x6f, 0xa8, 0xe0)   # --acc del tema oscuro, sobre fondo oscuro
 
 SPRITE = estampar(POSES['SIT'], 'NORMAL')
 

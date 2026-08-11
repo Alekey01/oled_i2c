@@ -1,4 +1,4 @@
-# Reloj "8 bits" + Clima — ESP32-S3 (Seeed Studio) + OLED 0.91" I2C
+# BitCat Watch — reloj "8 bits" + clima · ESP32-S3 (Seeed Studio) + OLED 0.91" I2C
 
 Reloj con estética de 8 bits en un SSD1306 de 0.91" (128x32). **La hora y el clima
 llegan por Bluetooth LE desde el celular: no usa WiFi ni credenciales de red.**
@@ -68,7 +68,7 @@ idf.py -p COM3 flash monitor
 ```
 
 Ajustes opcionales (nombre BLE, GPIOs, dirección y alto del panel) en
-`idf.py menuconfig` → **Reloj 8 bits + Clima (BLE)**.
+`idf.py menuconfig` → **BitCat Watch (reloj 8 bits + clima por BLE)**.
 
 ## Sincronizar desde el celular
 
