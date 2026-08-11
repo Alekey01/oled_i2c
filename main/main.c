@@ -16,6 +16,7 @@
 
 #include "driver/gpio.h"
 #include "esp_log.h"
+#include "esp_mac.h"
 #include "esp_pm.h"
 #include "esp_random.h"
 #include "esp_sleep.h"
@@ -516,9 +517,27 @@ void app_main(void)
     ssd1306_text(&s_oled, 0, 8, "INICIANDO BLE...", 1, true);
     ssd1306_flush(&s_oled);
 
+    /* El UUID del servicio es el mismo en todas las unidades: identifica al
+       modelo, no al aparato. Para poder distinguirlos en el selector del celular
+       se le pega al nombre los dos ultimos bytes de la MAC, unica de fabrica,
+       asi que el mismo binario sirve para todos sin configurar nada por unidad. */
+    static char ble_name[32];
+    uint8_t mac[6] = {0};
+    esp_err_t mac_err = esp_read_mac(mac, ESP_MAC_BT);
+    if (mac_err == ESP_OK) {
+        snprintf(ble_name, sizeof(ble_name), "%s %02X%02X",
+                 CONFIG_APP_BLE_NAME, mac[4], mac[5]);
+    } else {
+        /* Sin MAC legible se anuncia con el nombre pelado: peor para distinguir
+           dos relojes, pero preferible a no anunciarse. */
+        ESP_LOGW(TAG, "no se pudo leer la MAC (%s), nombre sin sufijo",
+                 esp_err_to_name(mac_err));
+        snprintf(ble_name, sizeof(ble_name), "%s", CONFIG_APP_BLE_NAME);
+    }
+
     const ble_sync_cb_t cb = {.on_time = on_time, .on_weather = on_weather};
-    ESP_ERROR_CHECK(ble_sync_start(CONFIG_APP_BLE_NAME, &cb));
-    ESP_LOGI(TAG, "listo, esperando al celular");
+    ESP_ERROR_CHECK(ble_sync_start(ble_name, &cb));
+    ESP_LOGI(TAG, "listo como \"%s\", esperando al celular", ble_name);
 
     xTaskCreate(display_task, "display", 4096, NULL, 4, &s_display_h);
     xTaskCreate(button_task, "button", 3072, NULL, 5, &s_button_h);

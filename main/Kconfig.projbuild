@@ -2,10 +2,13 @@ menu "BitCat Watch (reloj 8 bits + clima por BLE)"
 
     config APP_BLE_NAME
         string "Nombre BLE del dispositivo"
-        default "BITCAT WATCH"
+        default "BITCAT WATCH v1"
         help
             Con este nombre aparece el reloj al buscarlo desde el celular.
-            Maximo 20 caracteres para que quepa en el paquete de anuncio.
+            El firmware le agrega los ultimos dos bytes de la MAC (" A3F2"), de
+            modo que dos unidades con el mismo binario se distinguen solas.
+            Maximo 18 caracteres: con el sufijo son 23, el limite del paquete
+            de anuncio. Si te pasas se anuncia recortado.
 
     config APP_SCREEN_TIMEOUT_S
         int "Segundos de inactividad antes de apagar el OLED"

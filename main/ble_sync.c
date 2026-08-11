@@ -171,13 +171,25 @@ static void advertise(void)
 {
     /* El paquete de anuncio solo lleva flags + nombre; el UUID de 128 bits
        no cabe junto al nombre en 31 bytes, asi que va en el scan response. */
+    /* Presupuesto de los 31 bytes: 3 de flags + 3 de tx power + 2 de cabecera
+       del nombre dejan 23 para el nombre. Si no cabe se recorta y se marca como
+       incompleto: pasarse hace que adv_set_fields falle y el reloj no se
+       anuncie, que es mucho peor que un nombre corto. */
+    enum { NOMBRE_MAX = 23 };
+    size_t largo = strlen(s_name);
+
     struct ble_hs_adv_fields fields = {0};
     fields.flags = BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP;
     fields.name = (uint8_t *)s_name;
-    fields.name_len = strlen(s_name);
-    fields.name_is_complete = 1;
+    fields.name_len = largo > NOMBRE_MAX ? NOMBRE_MAX : largo;
+    fields.name_is_complete = (largo <= NOMBRE_MAX);
     fields.tx_pwr_lvl_is_present = 1;
     fields.tx_pwr_lvl = BLE_HS_ADV_TX_PWR_LVL_AUTO;
+
+    if (largo > NOMBRE_MAX) {
+        ESP_LOGW(TAG, "nombre de %d caracteres, se anuncia recortado a %d",
+                 (int)largo, NOMBRE_MAX);
+    }
 
     int rc = ble_gap_adv_set_fields(&fields);
     if (rc != 0) {
