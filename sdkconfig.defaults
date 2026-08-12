@@ -25,6 +25,12 @@ CONFIG_BT_NIMBLE_MAX_CONNECTIONS=1
 # escritura y medio mega tardaria una eternidad.
 CONFIG_BT_NIMBLE_ATT_PREFERRED_MTU=517
 
+# Diagnostico de un reinicio en bucle al arrancar BLE: asserts extra del host
+# NimBLE y medio segundo de margen para que el backtrace llegue a la consola
+# USB antes del reset.
+CONFIG_BT_NIMBLE_DEBUG=y
+CONFIG_ESP_SYSTEM_PANIC_REBOOT_DELAY_SECONDS=1
+
 # --- Ahorro de energia ---
 # El controlador BLE del ESP32-S3 puede usar el cristal principal como reloj de
 # baja potencia, asi que el light sleep funciona sin cristal externo de 32 kHz.

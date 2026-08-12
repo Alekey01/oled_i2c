@@ -397,6 +397,7 @@ static int gap_event(struct ble_gap_event *event, void *arg)
 
 static void advertise(void)
 {
+    ESP_LOGI(TAG, "advertise: preparando campos");
     /* El paquete de anuncio solo lleva flags + nombre; el UUID de 128 bits
        no cabe junto al nombre en 31 bytes, asi que va en el scan response. */
     /* Presupuesto de los 31 bytes: 3 de flags + 3 de tx power + 2 de cabecera
@@ -454,12 +455,23 @@ static void advertise(void)
 
 static void on_sync(void)
 {
-    ble_hs_util_ensure_addr(0);
-    int rc = ble_hs_id_infer_auto(0, &s_addr_type);
+    /* Aqui empieza la vida del host NimBLE: se llama al sincronizar con el
+       controlador. Si el log anterior ("host task") sale y estos no, el que se
+       cuelga o aborta es la inicializacion del controlador dentro de
+       nimble_port_run(). */
+    ESP_LOGI(TAG, "host sync: obteniendo direccion");
+    int rc = ble_hs_util_ensure_addr(0);
+    if (rc != 0) {
+        ESP_LOGE(TAG, "no se pudo asegurar la direccion: %d", rc);
+        return;
+    }
+    ESP_LOGI(TAG, "host sync: direccion lista");
+    rc = ble_hs_id_infer_auto(0, &s_addr_type);
     if (rc != 0) {
         ESP_LOGE(TAG, "no se pudo determinar la direccion: %d", rc);
         return;
     }
+    ESP_LOGI(TAG, "host sync: tipo de direccion %d, anunciando", s_addr_type);
     advertise();
 }
 
@@ -471,7 +483,9 @@ static void on_reset(int reason)
 
 static void host_task(void *param)
 {
+    ESP_LOGI(TAG, "host task: nimble_port_run()");
     nimble_port_run();              /* solo regresa al hacer deinit */
+    ESP_LOGW(TAG, "host task: nimble_port_run() regreso");
     nimble_port_freertos_deinit();
 }
 

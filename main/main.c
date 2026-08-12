@@ -23,6 +23,7 @@
 #include "esp_pm.h"
 #include "esp_random.h"
 #include "esp_sleep.h"
+#include "esp_system.h"
 #include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
@@ -949,6 +950,8 @@ static void display_task(void *arg)
 
     s_last_activity_us = esp_timer_get_time();
 
+    ESP_LOGI(TAG, "tarea de pantalla arrancada");
+
     while (1) {
         /* Al entrar a la vista del cangrejo se reinicia el recorrido, para que
            siempre empiece caminando desde fuera del borde izquierdo. Todo el
@@ -1241,8 +1244,35 @@ static void imu_task(void *arg)
 
 #endif /* CONFIG_APP_IMU_INT_GPIO >= 0 */
 
+static const char *reset_reason_str(esp_reset_reason_t r)
+{
+    switch (r) {
+    case ESP_RST_POWERON:    return "power-on";
+    case ESP_RST_SW:         return "software (esp_restart)";
+    case ESP_RST_PANIC:      return "panico/excepcion";
+    case ESP_RST_INT_WDT:    return "perro guardian de interrupciones";
+    case ESP_RST_TASK_WDT:   return "perro guardian de tareas";
+    case ESP_RST_WDT:        return "perro guardian";
+    case ESP_RST_BROWNOUT:   return "brownout";
+    case ESP_RST_USB:        return "USB";
+    case ESP_RST_DEEPSLEEP:  return "deep sleep";
+    case ESP_RST_JTAG:       return "JTAG";
+    default:                 return "desconocido";
+    }
+}
+
 void app_main(void)
 {
+    /*
+     * Diagnostico: motivo del ultimo reinicio y RAM libre. Con light sleep la
+     * consola USB es poco fiable, asi que este log es lo que confirma si el
+     * bucle de arranque es un panico (PANIC), un perro guardian (INT_WDT /
+     * TASK_WDT) o un esp_restart() (SW).
+     */
+    ESP_LOGI(TAG, "reinicio por: %s (%d), heap libre %lu",
+             reset_reason_str(esp_reset_reason()), (int)esp_reset_reason(),
+             (unsigned long)esp_get_free_heap_size());
+
     esp_err_t err = nvs_flash_init();
     if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
         ESP_ERROR_CHECK(nvs_flash_erase());
@@ -1358,6 +1388,8 @@ void app_main(void)
     }
 #endif
 
+    ESP_LOGI(TAG, "tareas creadas, configurando PM");
+
 #if CONFIG_APP_LIGHT_SLEEP
     /* Se configura al final, cuando ya no queda nada que despierte al CPU de
        forma periodica: el boton va por interrupcion y la pantalla se refresca
@@ -1369,5 +1401,8 @@ void app_main(void)
     };
     ESP_ERROR_CHECK(esp_pm_configure(&pm));
     ESP_LOGI(TAG, "light sleep activo (80/40 MHz)");
+#else
+    ESP_LOGI(TAG, "PM configurado (sin light sleep)");
 #endif
+    ESP_LOGI(TAG, "PM ok, app lista");
 }
