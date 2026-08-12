@@ -16,6 +16,7 @@
 
 #include "driver/gpio.h"
 #include "esp_app_desc.h"
+#include "esp_err.h"
 #include "esp_log.h"
 #include "esp_mac.h"
 #include "esp_ota_ops.h"
@@ -1322,7 +1323,18 @@ void app_main(void)
     }
 
     const ble_sync_cb_t cb = {.on_time = on_time, .on_weather = on_weather};
-    ESP_ERROR_CHECK(ble_sync_start(ble_name, &cb));
+    err = ble_sync_start(ble_name, &cb);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "BLE no pudo arrancar: %s", esp_err_to_name(err));
+        ssd1306_clear(&s_oled);
+        text_center(2, "BITCAT WATCH", 1);
+        text_center(14, "BLE FALLO", 1);
+        ssd1306_text(&s_oled, 0, 25, esp_err_to_name(err), 1, true);
+        ssd1306_flush(&s_oled);
+        while (true) {
+            vTaskDelay(pdMS_TO_TICKS(1000));
+        }
+    }
     ESP_LOGI(TAG, "listo como \"%s\", esperando al celular", ble_name);
 
     /* Una sola vez para todos los pines con interrupcion. */
