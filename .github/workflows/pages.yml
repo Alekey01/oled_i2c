@@ -23,11 +23,12 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  publicar:
+  # Compilar y desplegar van separados a proposito. Si el despliegue falla y le
+  # das a "Re-run failed jobs", solo se repite el despliegue: no se sube un
+  # segundo artefacto con el mismo nombre, que es lo que hace que deploy-pages
+  # se queje de "Multiple artifacts named github-pages".
+  construir:
     runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deploy.outputs.page_url }}
     steps:
       - uses: actions/checkout@v4
 
@@ -95,5 +96,12 @@ jobs:
         with:
           path: webapp
 
+  desplegar:
+    needs: construir
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
       - id: deploy
         uses: actions/deploy-pages@v4
