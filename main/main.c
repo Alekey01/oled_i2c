@@ -32,6 +32,7 @@
 #include "battery.h"
 #include "bitcat.h"
 #include "ble_sync.h"
+#include "imu.h"
 #include "ota.h"
 #include "ssd1306.h"
 #include "weather.h"
@@ -1101,7 +1102,6 @@ static void button_task(void *arg)
         .intr_type = GPIO_INTR_LOW_LEVEL,
     };
     ESP_ERROR_CHECK(gpio_config(&cfg));
-    ESP_ERROR_CHECK(gpio_install_isr_service(0));
     ESP_ERROR_CHECK(gpio_isr_handler_add(CONFIG_APP_BUTTON_GPIO, button_isr, NULL));
 
     /* Para que el boton tambien saque al chip del light sleep. Del light sleep
@@ -1156,6 +1156,68 @@ static void button_task(void *arg)
         gpio_intr_enable(CONFIG_APP_BUTTON_GPIO);
     }
 }
+
+#if CONFIG_APP_IMU_INT_GPIO >= 0
+
+static TaskHandle_t s_imu_h;
+
+static void IRAM_ATTR imu_isr(void *arg)
+{
+    BaseType_t hp = pdFALSE;
+    vTaskNotifyGiveFromISR(s_imu_h, &hp);
+    portYIELD_FROM_ISR(hp);
+}
+
+/*
+ * El MPU-6050 avisa por su pin INT cuando detecta movimiento. Eso no cambia de
+ * vista: solo cuenta como actividad, igual que tocar el boton, y por tanto
+ * enciende la pantalla y reinicia la cuenta atras para apagarla.
+ *
+ * La interrupcion esta enclavada, asi que hay que leer INT_STATUS para soltarla.
+ * Esa lectura va por el mismo bus I2C que el OLED, de ahi el mutex de dibujo.
+ */
+static void imu_task(void *arg)
+{
+    const gpio_config_t cfg = {
+        .pin_bit_mask = 1ULL << CONFIG_APP_IMU_INT_GPIO,
+        .mode = GPIO_MODE_INPUT,
+        .pull_up_en = GPIO_PULLUP_ENABLE,
+        .intr_type = GPIO_INTR_LOW_LEVEL,
+    };
+    ESP_ERROR_CHECK(gpio_config(&cfg));
+    ESP_ERROR_CHECK(gpio_isr_handler_add(CONFIG_APP_IMU_INT_GPIO, imu_isr, NULL));
+    ESP_ERROR_CHECK(gpio_wakeup_enable(CONFIG_APP_IMU_INT_GPIO, GPIO_INTR_LOW_LEVEL));
+
+    /* Suelta lo que haya quedado enclavado durante el arranque. */
+    xSemaphoreTake(s_draw_mux, portMAX_DELAY);
+    imu_atender_int();
+    xSemaphoreGive(s_draw_mux);
+
+    while (1) {
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        gpio_intr_disable(CONFIG_APP_IMU_INT_GPIO);
+
+        xSemaphoreTake(s_draw_mux, portMAX_DELAY);
+        bool movimiento = imu_atender_int();
+        xSemaphoreGive(s_draw_mux);
+
+        if (movimiento) {
+            s_screen_req_off = false;
+            s_last_activity_us = esp_timer_get_time();
+            xTaskNotifyGive(s_display_h);
+        }
+
+        /* Mientras el reloj siga en movimiento la interrupcion se redispara sin
+           parar. Este respiro la limita a cinco veces por segundo, que de sobra
+           mantiene la pantalla despierta sin freir el CPU. */
+        vTaskDelay(pdMS_TO_TICKS(200));
+
+        ulTaskNotifyTake(pdTRUE, 0);
+        gpio_intr_enable(CONFIG_APP_IMU_INT_GPIO);
+    }
+}
+
+#endif /* CONFIG_APP_IMU_INT_GPIO >= 0 */
 
 void app_main(void)
 {
@@ -1231,8 +1293,21 @@ void app_main(void)
     ESP_ERROR_CHECK(ble_sync_start(ble_name, &cb));
     ESP_LOGI(TAG, "listo como \"%s\", esperando al celular", ble_name);
 
+    /* Una sola vez para todos los pines con interrupcion. */
+    ESP_ERROR_CHECK(gpio_install_isr_service(0));
+
     xTaskCreate(display_task, "display", 4096, NULL, 4, &s_display_h);
     xTaskCreate(button_task, "button", 3072, NULL, 5, &s_button_h);
+
+#if CONFIG_APP_IMU_INT_GPIO >= 0
+    /* Comparte el bus que ya creo el driver del OLED. */
+    if (imu_init(s_oled.bus, CONFIG_APP_IMU_ADDR,
+                 CONFIG_APP_IMU_UMBRAL, CONFIG_APP_IMU_DURACION_MS) == ESP_OK) {
+        xTaskCreate(imu_task, "imu", 3072, NULL, 5, &s_imu_h);
+    } else {
+        ESP_LOGW(TAG, "sin MPU-6050; la pantalla solo respondera al boton");
+    }
+#endif
 
 #if CONFIG_APP_LIGHT_SLEEP
     /* Se configura al final, cuando ya no queda nada que despierte al CPU de

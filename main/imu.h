@@ -1,0 +1,32 @@
+#pragma once
+
+#include <stdbool.h>
+
+#include "driver/i2c_master.h"
+#include "esp_err.h"
+
+/*
+ * MPU-6050 para despertar la pantalla al mover el reloj.
+ *
+ * Va en el mismo bus I2C que el OLED: el panel responde en 0x3C y el sensor en
+ * 0x68, asi que solo hay que soldar VCC, GND y los dos hilos del bus, mas el pin
+ * INT a un GPIO libre.
+ *
+ * El giroscopio se queda apagado. Es el que consume —el chip entero ronda los
+ * 3.9 mA con todo encendido, que doblaria el gasto del reloj—, y para detectar
+ * movimiento no hace falta. Con solo el acelerometro en modo ciclo, el sensor se
+ * despierta unas pocas veces por segundo y baja a decenas de microamperios.
+ *
+ * La interrupcion se configura enclavada y activa a nivel bajo, no por flanco:
+ * del light sleep solo se puede despertar por nivel.
+ */
+
+esp_err_t imu_init(i2c_master_bus_handle_t bus, uint8_t addr, uint8_t umbral, uint8_t duracion_ms);
+
+bool imu_disponible(void);
+
+/* Limpia la interrupcion enclavada. Devuelve true si venia de movimiento. */
+bool imu_atender_int(void);
+
+/* Aceleracion en mili-g. Cualquiera puede ser NULL. */
+esp_err_t imu_leer(int *x_mg, int *y_mg, int *z_mg);

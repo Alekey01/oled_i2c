@@ -10,12 +10,56 @@ menu "BitCat Watch (reloj 8 bits + clima por BLE)"
             Maximo 18 caracteres: con el sufijo son 23, el limite del paquete
             de anuncio. Si te pasas se anuncia recortado.
 
+    config APP_IMU_INT_GPIO
+        int "GPIO del pin INT del MPU-6050 (-1 = sin sensor)"
+        default -1
+        range -1 20
+        help
+            El MPU-6050 va en el mismo bus I2C que el OLED (0x68 contra 0x3C),
+            asi que solo hace falta soldar VCC, GND, SDA, SCL y este pin.
+
+            4 = pin D3 de la XIAO, que queda libre. -1 desactiva el sensor y no
+            compila nada de esto.
+
+            Con el sensor puesto la pantalla se apaga sola y se enciende al mover
+            el reloj, que es lo que de verdad ahorra bateria y lo unico que frena
+            el desgaste del OLED de raiz.
+
+    config APP_IMU_ADDR
+        hex "Direccion I2C del MPU-6050"
+        default 0x68
+        depends on APP_IMU_INT_GPIO >= 0
+        help
+            0x68 con AD0 a masa (lo habitual), 0x69 con AD0 a 3V3.
+
+    config APP_IMU_UMBRAL
+        int "Umbral de movimiento"
+        default 20
+        range 1 255
+        depends on APP_IMU_INT_GPIO >= 0
+        help
+            Cuanto movimiento hace falta para despertar la pantalla. Mas bajo es
+            mas sensible. Hay que afinarlo con el reloj puesto: 20 es un punto de
+            partida, no un valor medido.
+
+    config APP_IMU_DURACION_MS
+        int "Milisegundos que debe durar el movimiento"
+        default 20
+        range 1 255
+        depends on APP_IMU_INT_GPIO >= 0
+        help
+            Filtra los golpes sueltos. Subelo si la pantalla se enciende sola
+            sobre la mesa.
+
     config APP_SCREEN_TIMEOUT_S
         int "Segundos de inactividad antes de apagar el OLED"
+        default 8 if APP_IMU_INT_GPIO >= 0
         default 0
         range 0 3600
         help
             0 = la pantalla nunca se apaga.
+            Con el MPU-6050 puesto conviene un valor corto: el sensor la vuelve
+            a encender al mover el reloj, asi que apagarla no molesta.
             Con cualquier otro valor el panel se apaga solo tras ese tiempo sin
             tocar el boton, y vuelve al presionarlo. Con la pantalla apagada el
             reloj sigue contando y recibiendo por BLE.

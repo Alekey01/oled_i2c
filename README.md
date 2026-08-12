@@ -101,6 +101,44 @@ en bus I2C.
 Dirección I2C por defecto `0x3C`, bus a 400 kHz, pull-ups internos habilitados
 (si el módulo no trae pull-ups propios y el bus falla, agrega 4.7 kΩ a 3V3).
 
+### Despertar por movimiento con MPU-6050 (opcional)
+
+Comparte el bus I2C con el OLED — el panel responde en `0x3C` y el sensor en
+`0x68`, así que no hace falta un bus nuevo:
+
+| MPU-6050 | XIAO ESP32-S3 |
+|---|---|
+| VCC | 3V3 |
+| GND | GND |
+| SDA | D4 (GPIO 5) |
+| SCL | D5 (GPIO 6) |
+| INT | D3 (GPIO 4) |
+
+> Si tu módulo es un GY-521 con regulador tolera 5 V; la placa desnuda es de
+> **3.3 V y nada más**.
+
+En `menuconfig`, `APP_IMU_INT_GPIO = 4`. Con eso `APP_SCREEN_TIMEOUT_S` pasa
+automáticamente a 8 s: la pantalla se apaga sola y el movimiento la enciende.
+
+**El giroscopio se queda apagado.** Es el que consume — el chip entero ronda los
+3.9 mA con todo encendido, más que el resto del reloj junto. Solo con el
+acelerómetro en modo ciclo, despertando 5 veces por segundo, baja a decenas de
+µA. Para detectar movimiento no hace falta más.
+
+La interrupción va **enclavada y activa a nivel bajo**, no por flanco: del light
+sleep solo se puede despertar por nivel. El firmware lee `INT_STATUS` para
+soltarla y se toma 200 ms antes de rearmar, que evita que un reloj en movimiento
+dispare la interrupción sin parar.
+
+El filtro paso alto del acelerómetro tiene que estar encendido para que la
+detección mida el *cambio* y no la gravedad. Sin él la interrupción salta sola en
+cuanto el reloj no está plano.
+
+> `APP_IMU_UMBRAL` y `APP_IMU_DURACION_MS` vienen en 20, que es **un punto de
+> partida, no un valor medido**. Hay que afinarlos con el reloj puesto: si se
+> enciende solo sobre la mesa, sube la duración; si hay que agitarlo, baja el
+> umbral.
+
 ### Indicador de batería (opcional)
 
 La XIAO ESP32-S3 **carga** el LiPo por los pads B+/B− (50 mA rápido, 100 mA en la
@@ -351,6 +389,7 @@ hace falta configurar zona horaria en el firmware: el celular la trae puesta.
 | `main/ble_sync.c/.h` | Servidor GATT con NimBLE (anuncio, conexión, escrituras, transporte del OTA) |
 | `main/ota.c/.h` | Descifrado de la imagen, escritura en la ranura libre y cambio de arranque |
 | `main/battery.c/.h` | Lectura del divisor por ADC y curva de descarga del LiPo |
+| `main/imu.c/.h` | MPU-6050 en modo bajo consumo e interrupción por movimiento |
 | `partitions.csv` | Dos ranuras de app de 2 MB, necesarias para el OTA |
 | `version.txt` | Versión del firmware |
 | `ota_public_key.pem` | Clave pública con la que el CI cifra la imagen |

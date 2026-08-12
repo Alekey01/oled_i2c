@@ -7,6 +7,7 @@ idf_component_register(SRCS "bitcat.c" "weather_icon.c" "main.c"
                             "weather.c"
                             "ota.c"
                             "battery.c"
+                            "imu.c"
                        EMBED_TXTFILES "ota_private_key.pem"
                        REQUIRES esp_driver_i2c
                                 esp_driver_gpio
