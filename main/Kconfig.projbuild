@@ -63,6 +63,28 @@ menu "BitCat Watch (reloj 8 bits + clima por BLE)"
             0 = boton BOOT de la XIAO ESP32-S3 (a GND, con pull-up interno).
             Si conectas un boton propio, tambien debe ir a GND.
 
+    config APP_BATTERY_GPIO
+        int "GPIO del divisor de bateria (-1 = sin indicador)"
+        default -1
+        range -1 20
+        help
+            La XIAO ESP32-S3 carga el LiPo pero no trae forma de medirlo: la
+            wiki de Seeed dice que ningun GPIO llega al pin de bateria. Hay que
+            soldar un divisor de dos resistencias de 100k entre B+ y GND, con el
+            punto medio a un pin de ADC1.
+
+            1 = pin A0 de la XIAO. -1 desactiva el indicador y no compila nada
+            de esto, que es lo que quieres si todavia no has soldado.
+
+    config APP_BATTERY_DIVISOR_X100
+        int "Relacion del divisor, multiplicada por 100"
+        default 200
+        range 100 1000
+        depends on APP_BATTERY_GPIO >= 0
+        help
+            200 = dos resistencias iguales, o sea el voltaje se divide entre 2.
+            Si usas otras, pon (R1+R2)/R2 por 100.
+
     config APP_I2C_SCL_GPIO
         int "GPIO de SCL"
         default 6

@@ -101,6 +101,38 @@ en bus I2C.
 Dirección I2C por defecto `0x3C`, bus a 400 kHz, pull-ups internos habilitados
 (si el módulo no trae pull-ups propios y el bus falla, agrega 4.7 kΩ a 3V3).
 
+### Indicador de batería (opcional)
+
+La XIAO ESP32-S3 **carga** el LiPo por los pads B+/B− (50 mA rápido, 100 mA en la
+Sense) pero no permite **medirlo**: la wiki de Seeed dice que todos los GPIO
+están asignados y ninguno llega al pin de batería. Cargador sí, medidor no.
+
+Hace falta un divisor:
+
+```
+B+ ──[100kΩ]──┬──[100kΩ]── GND
+              │
+             A0 (GPIO 1)
+```
+
+- **2:1** deja los 4.2 V del LiPo en 2.1 V, dentro del rango del ADC con 12 dB
+  de atenuación. Sin divisor se fríe el pin.
+- **100 kΩ y no 1 MΩ**: el ADC quiere ver menos de ~100 kΩ de impedancia de
+  fuente o la lectura se va. Con dos de 100 k quedan 50 k.
+- Consume 21 µA — medio mAh al día. Irrelevante.
+
+Luego, en `menuconfig`, `APP_BATTERY_GPIO = 1`. Viene en `-1` (desactivado) y
+así el código ni se compila, que es lo que quieres mientras no hayas soldado.
+
+> El firmware que publica el CI usa los valores por defecto, así que **el
+> indicador no se activa por OTA**: hay que compilar en local con la opción
+> puesta y flashear por USB una vez.
+
+El porcentaje no sale del voltaje directo. La descarga de un LiPo no es lineal
+—entre 4.2 y 3.8 V se va la mitad de la carga, y bajo 3.6 V cae en picado—, así
+que se interpola sobre una tabla. La pila se dibuja con 8 columnas: más
+resolución sería fingir una precisión que el ADC no tiene.
+
 ## Compilar y flashear
 
 ```bash
@@ -318,6 +350,7 @@ hace falta configurar zona horaria en el firmware: el celular la trae puesta.
 | `main/bitcat.c/.h` | BitCat 31x24: cinco poses, seis expresiones y cuatro accesorios, todos combinables |
 | `main/ble_sync.c/.h` | Servidor GATT con NimBLE (anuncio, conexión, escrituras, transporte del OTA) |
 | `main/ota.c/.h` | Descifrado de la imagen, escritura en la ranura libre y cambio de arranque |
+| `main/battery.c/.h` | Lectura del divisor por ADC y curva de descarga del LiPo |
 | `partitions.csv` | Dos ranuras de app de 2 MB, necesarias para el OTA |
 | `version.txt` | Versión del firmware |
 | `ota_public_key.pem` | Clave pública con la que el CI cifra la imagen |

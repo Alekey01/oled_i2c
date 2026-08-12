@@ -29,6 +29,7 @@
 #include "nvs.h"
 #include "nvs_flash.h"
 
+#include "battery.h"
 #include "bitcat.h"
 #include "ble_sync.h"
 #include "ota.h"
@@ -258,6 +259,23 @@ static void draw_bt_icon(int x, int y)
                 ssd1306_pixel(&s_oled, x + c, y + r, true);
             }
         }
+    }
+}
+
+/*
+ * Pila de 12x6 con ocho columnas de relleno. Ocho y no diez para que cada
+ * columna valga 12.5%: mas resolucion seria mentir, porque la lectura del ADC no
+ * distingue mejor que eso en la zona plana de la curva del LiPo.
+ */
+static void draw_bat(int x, int y, int pct)
+{
+    ssd1306_rect(&s_oled, x, y, 10, 6, true);              /* carcasa */
+    ssd1306_fill_rect(&s_oled, x + 10, y + 2, 2, 2, true); /* borne */
+
+    int llenas = (pct * 8 + 50) / 100;
+    if (llenas > 8) llenas = 8;
+    if (llenas > 0) {
+        ssd1306_fill_rect(&s_oled, x + 1, y + 1, llenas, 4, true);
     }
 }
 
@@ -868,6 +886,13 @@ static void render(void)
         } else if (stale && s_view != VIEW_GAME && (tm_now.tm_sec % 2) == 0) {
             ssd1306_rect(&s_oled, 124, 28, 4, 4, true);
         }
+
+        /* La pila va solo en la vista del reloj: es la unica con la esquina
+           superior derecha libre, y es donde se mira de paso. */
+        int pct;
+        if (s_view == VIEW_CLOCK && battery_estado(NULL, &pct)) {
+            draw_bat(SSD1306_WIDTH - 12, 0, pct);
+        }
     }
 
     ssd1306_flush(&s_oled);
@@ -897,6 +922,7 @@ static void display_task(void *arg)
     view_t last = s_view;
     bool ota_confirmado = false;
     int contraste = -1;   /* -1 = todavia sin fijar */
+    int64_t bateria_us = 0;
 
     s_last_activity_us = esp_timer_get_time();
 
@@ -925,6 +951,13 @@ static void display_task(void *arg)
         if (!ota_confirmado && esp_timer_get_time() > 30LL * 1000000) {
             ota_marcar_valido();
             ota_confirmado = true;
+        }
+
+        /* La lectura promedia 16 muestras, asi que no va por cuadro. Cada 30 s
+           sobra: un LiPo no cambia de nivel en menos que eso. */
+        if (battery_disponible() && esp_timer_get_time() - bateria_us > 30LL * 1000000) {
+            bateria_us = esp_timer_get_time();
+            battery_actualizar();
         }
 
         if (s_hist_por_guardar) {
@@ -1139,6 +1172,11 @@ void app_main(void)
     s_weather.wind_deg = -1;
 
     hist_cargar();
+
+    /* Sin APP_BATTERY_GPIO configurado no hace nada y no falla. */
+    if (battery_init() != ESP_OK) {
+        ESP_LOGW(TAG, "sin indicador de bateria");
+    }
 
     ESP_ERROR_CHECK(ssd1306_init(&s_oled,
                                  CONFIG_APP_I2C_SDA_GPIO,
