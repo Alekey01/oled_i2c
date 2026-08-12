@@ -1126,6 +1126,12 @@ static void button_task(void *arg)
         .pull_up_en = GPIO_PULLUP_ENABLE,
         .intr_type = GPIO_INTR_LOW_LEVEL,
     };
+    /* Igual que en la tarea del sensor: el handle se toma aqui, no del
+       xTaskCreate, porque la ISR puede llegar antes de que aquel lo escriba.
+       Aqui hace falta arrancar con el boton pulsado para provocarlo, pero el
+       fallo seria el mismo. */
+    s_button_h = xTaskGetCurrentTaskHandle();
+
     ESP_ERROR_CHECK(gpio_config(&cfg));
     ESP_ERROR_CHECK(gpio_isr_handler_add(CONFIG_APP_BUTTON_GPIO, button_isr, NULL));
 
@@ -1203,6 +1209,22 @@ static void IRAM_ATTR imu_isr(void *arg)
  */
 static void imu_task(void *arg)
 {
+    /*
+     * El handle se toma aqui y no del xTaskCreate. Esta tarea corre con mas
+     * prioridad que la que la crea, asi que empieza antes de que xTaskCreate
+     * llegue a escribir su salida: si la interrupcion llegara en ese hueco, la
+     * ISR notificaria a un handle todavia sin asignar y el sistema entra en
+     * panico. Y llega, porque la linea INT del MPU es activa a nivel bajo y
+     * queda enclavada en cuanto el reloj se mueve, o sea desde antes de arrancar.
+     */
+    s_imu_h = xTaskGetCurrentTaskHandle();
+
+    /* Soltar el enclavamiento ANTES de habilitar la interrupcion: si el pin ya
+       esta abajo, en cuanto se arma empieza a dispararse sin parar. */
+    xSemaphoreTake(s_draw_mux, portMAX_DELAY);
+    imu_atender_int();
+    xSemaphoreGive(s_draw_mux);
+
     const gpio_config_t cfg = {
         .pin_bit_mask = 1ULL << CONFIG_APP_IMU_INT_GPIO,
         .mode = GPIO_MODE_INPUT,
@@ -1212,11 +1234,6 @@ static void imu_task(void *arg)
     ESP_ERROR_CHECK(gpio_config(&cfg));
     ESP_ERROR_CHECK(gpio_isr_handler_add(CONFIG_APP_IMU_INT_GPIO, imu_isr, NULL));
     ESP_ERROR_CHECK(gpio_wakeup_enable(CONFIG_APP_IMU_INT_GPIO, GPIO_INTR_LOW_LEVEL));
-
-    /* Suelta lo que haya quedado enclavado durante el arranque. */
-    xSemaphoreTake(s_draw_mux, portMAX_DELAY);
-    imu_atender_int();
-    xSemaphoreGive(s_draw_mux);
 
     while (1) {
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
