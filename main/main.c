@@ -918,8 +918,20 @@ static uint32_t ms_al_proximo_segundo(void)
 
 static void display_task(void *arg)
 {
-    const int64_t timeout_us = (int64_t)CONFIG_APP_SCREEN_TIMEOUT_S * 1000000;
+    int64_t timeout_us = (int64_t)CONFIG_APP_SCREEN_TIMEOUT_S * 1000000;
     const int64_t sol_us = (int64_t)CONFIG_APP_OLED_SUN_S * 1000000;
+
+#if CONFIG_APP_IMU_INT_GPIO >= 0
+    /*
+     * El apagado automatico solo se sostiene si algo vuelve a encender la
+     * pantalla sola. Si el sensor no contesta —mal cableado, direccion I2C
+     * distinta— dejarla apagarse cada 8 s seria peor que no apagarla: la unica
+     * forma de ver la hora seria pulsar el boton cada vez.
+     */
+    if (!imu_disponible()) {
+        timeout_us = 0;
+    }
+#endif
     view_t last = s_view;
     bool ota_confirmado = false;
     int contraste = -1;   /* -1 = todavia sin fijar */
@@ -1246,6 +1258,16 @@ void app_main(void)
                                  CONFIG_APP_OLED_ADDR,
                                  400000,
                                  CONFIG_APP_OLED_HEIGHT));
+
+#if CONFIG_APP_IMU_INT_GPIO >= 0
+    /* Antes de la pantalla de arranque para poder decir ahi si respondio.
+       Comparte el bus que acaba de crear el driver del OLED. */
+    if (imu_init(s_oled.bus, CONFIG_APP_IMU_ADDR,
+                 CONFIG_APP_IMU_UMBRAL, CONFIG_APP_IMU_DURACION_MS) != ESP_OK) {
+        ESP_LOGW(TAG, "sin MPU-6050; la pantalla solo respondera al boton");
+    }
+#endif
+
     /*
      * Pantalla de arranque con la ranura y la hora de compilacion. Es la unica
      * forma comoda de comprobar que un OTA entro: tras actualizar tiene que
@@ -1256,13 +1278,23 @@ void app_main(void)
     {
         const esp_app_desc_t *desc = esp_app_get_description();
         const esp_partition_t *run = esp_ota_get_running_partition();
-        /* Holgado a proposito: version[32] y label[17] no caben en menos, y el
-           compilador trata el truncado posible como error. En pantalla son
-           "V1.0.0  app0", doce caracteres. */
-        char linea[56];
+        /* Holgado a proposito: version[32], label[17] y el sufijo del sensor no
+           caben en menos, y el compilador trata el truncado posible como error.
+           En pantalla son "V1.1.2  app0  IMU", diecisiete caracteres. */
+        char linea[72];
+
+        /*
+         * La pantalla de arranque es el unico sitio fiable para informar: con
+         * light sleep la consola USB no aguanta, asi que si el sensor no
+         * responde no habria forma comoda de enterarse.
+         */
+        const char *imu = "";
+#if CONFIG_APP_IMU_INT_GPIO >= 0
+        imu = imu_disponible() ? "  IMU" : "  SIN IMU";
+#endif
 
         text_center(2, "BITCAT WATCH", 1);
-        snprintf(linea, sizeof(linea), "V%s  %s", desc->version, run->label);
+        snprintf(linea, sizeof(linea), "V%s  %s%s", desc->version, run->label, imu);
         text_center(14, linea, 1);
         ssd1306_text(&s_oled, 0, 25, "INICIANDO BLE...", 1, true);
         ssd1306_flush(&s_oled);
@@ -1300,12 +1332,8 @@ void app_main(void)
     xTaskCreate(button_task, "button", 3072, NULL, 5, &s_button_h);
 
 #if CONFIG_APP_IMU_INT_GPIO >= 0
-    /* Comparte el bus que ya creo el driver del OLED. */
-    if (imu_init(s_oled.bus, CONFIG_APP_IMU_ADDR,
-                 CONFIG_APP_IMU_UMBRAL, CONFIG_APP_IMU_DURACION_MS) == ESP_OK) {
+    if (imu_disponible()) {
         xTaskCreate(imu_task, "imu", 3072, NULL, 5, &s_imu_h);
-    } else {
-        ESP_LOGW(TAG, "sin MPU-6050; la pantalla solo respondera al boton");
     }
 #endif
 

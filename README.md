@@ -117,8 +117,16 @@ Comparte el bus I2C con el OLED — el panel responde en `0x3C` y el sensor en
 > Si tu módulo es un GY-521 con regulador tolera 5 V; la placa desnuda es de
 > **3.3 V y nada más**.
 
-En `menuconfig`, `APP_IMU_INT_GPIO = 4`. Con eso `APP_SCREEN_TIMEOUT_S` pasa
-automáticamente a 8 s: la pantalla se apaga sola y el movimiento la enciende.
+Viene **activado por defecto** en `APP_IMU_INT_GPIO = 4`, y con eso
+`APP_SCREEN_TIMEOUT_S` pasa a 8 s: la pantalla se apaga sola y el movimiento la
+enciende. Ponlo en `-1` si montas el reloj sin sensor.
+
+Si el sensor no responde —mal cableado, otra dirección I2C— el firmware **deja
+la pantalla encendida de forma permanente** en vez de apagarla cada 8 s. Sin algo
+que la vuelva a encender sola, ese apagado sería peor que no tenerlo.
+
+La pantalla de arranque lo dice: `V1.1.2  app0  IMU` si respondió, `SIN IMU` si
+no. Va ahí y no en el log porque con light sleep la consola USB no aguanta.
 
 **El giroscopio se queda apagado.** Es el que consume — el chip entero ronda los
 3.9 mA con todo encendido, más que el resto del reloj junto. Solo con el

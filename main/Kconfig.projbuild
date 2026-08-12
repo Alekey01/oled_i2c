@@ -12,7 +12,7 @@ menu "BitCat Watch (reloj 8 bits + clima por BLE)"
 
     config APP_IMU_INT_GPIO
         int "GPIO del pin INT del MPU-6050 (-1 = sin sensor)"
-        default -1
+        default 4
         range -1 20
         help
             El MPU-6050 va en el mismo bus I2C que el OLED (0x68 contra 0x3C),
