@@ -289,6 +289,15 @@ static void draw_clock(const struct tm *t, bool have_time)
         snprintf(buf, sizeof(buf), "%s", ble_sync_connected() ? "SINCRONIZANDO" : "ESPERA CELULAR");
     }
     text_center(24, buf, 1);
+
+    /* Version abajo a la derecha. La fecha va centrada y ocupa como mucho hasta
+       la columna 93, asi que aqui no se pisan. Sirve para saber de un vistazo si
+       una actualizacion entro, sin tener que reiniciar para ver el arranque. */
+    if (have_time) {
+        const esp_app_desc_t *desc = esp_app_get_description();
+        snprintf(buf, sizeof(buf), "%s", desc->version);
+        ssd1306_text(&s_oled, SSD1306_WIDTH - ssd1306_text_width(buf, 1) + 1, 24, buf, 1, true);
+    }
 }
 
 /* Vista 2: icono, temperatura, humedad y viento. */
@@ -807,7 +816,8 @@ static void render(void)
                 draw_bt_icon(1, 1);
             }
         } else if (stale && s_view != VIEW_GAME && (tm_now.tm_sec % 2) == 0) {
-            ssd1306_rect(&s_oled, 124, 28, 4, 4, true);
+            /* Arriba a la derecha, que abajo ya esta la version. */
+            ssd1306_rect(&s_oled, 124, 0, 4, 4, true);
         }
     }
 

@@ -778,17 +778,36 @@ async function enviarFirmware(datos, nombre) {
     if (listo.estado !== OTA_LISTO) throw new Error('el reloj rechazo la actualizacion');
     log('ota', 'ranura preparada, enviando');
 
-    const sinRespuesta = chrOtaData.writeValueWithoutResponse
-      ? d => chrOtaData.writeValueWithoutResponse(d)
-      : d => chrOtaData.writeValue(d);
+    /*
+     * Con respuesta cuando el reloj la acepta: cada trozo espera a que el
+     * anterior este grabado en flash, que es el unico control de flujo que hay.
+     * Sin el, el celular sigue mandando mientras el reloj borra un sector y el
+     * enlace se cae a media transferencia. Cuesta velocidad —unos 30 KB/s en vez
+     * de 100— pero medio mega sigue tardando menos de medio minuto.
+     *
+     * Los relojes con firmware anterior solo declaran la escritura sin
+     * respuesta, asi que se conserva ese camino.
+     */
+    const conFlujo = chrOtaData.properties && chrOtaData.properties.write;
+    const enviarTrozo = conFlujo
+      ? d => escribirCon(chrOtaData, d)
+      : (chrOtaData.writeValueWithoutResponse
+          ? d => chrOtaData.writeValueWithoutResponse(d)
+          : d => chrOtaData.writeValue(d));
+    log('ota', conFlujo ? 'enviando con control de flujo' : 'enviando sin control de flujo');
 
     let trozo = OTA_CHUNK_MAX, off = 0, ultimoPct = -1;
     while (off < datos.length) {
       const parte = datos.subarray(off, off + trozo);
       try {
-        await sinRespuesta(parte);
+        await enviarTrozo(parte);
       } catch (e) {
-        // Casi siempre es que el MTU negociado es menor de lo que pedimos.
+        // Si el enlace se cayo no hay trozo que valga: reintentar mas pequeño
+        // solo esconderia la causa detras de una cascada de fallos.
+        if (/disconnect/i.test(e.message) || !conectado()) {
+          throw new Error(`se perdio el enlace al ${pintarBarra(off, datos.length)}%`);
+        }
+        // Si no, casi siempre es que el MTU negociado es menor del que pedimos.
         if (trozo > OTA_CHUNK_MIN) {
           trozo = Math.floor(trozo / 2);
           log('ota', `bajando el trozo a ${trozo} bytes`);

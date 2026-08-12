@@ -75,7 +75,10 @@ static void pedir_conexion(bool rapida)
             .itvl_min = 12,               /* 15 ms */
             .itvl_max = 24,               /* 30 ms */
             .latency = 0,
-            .supervision_timeout = 400,   /* 4 s */
+            /* Holgado: borrar un sector de flash puede dejar al reloj sin
+               atender el radio varias decenas de ms, y con 4 s el celular daba
+               la conexion por perdida a media actualizacion. */
+            .supervision_timeout = 1000,  /* 10 s */
         };
     } else {
         p = (struct ble_gap_upd_params){
@@ -186,6 +189,8 @@ static int chr_info_read(uint16_t conn, uint16_t attr, struct ble_gatt_access_ct
 
 static int chr_write(uint16_t conn, uint16_t attr, struct ble_gatt_access_ctxt *ctxt, void *arg)
 {
+    /* El opcode de escritura sin respuesta llega con el mismo op, asi que esto
+       vale para las dos formas. */
     if (ctxt->op != BLE_GATT_ACCESS_OP_WRITE_CHR) {
         return BLE_ATT_ERR_UNLIKELY;
     }
@@ -300,11 +305,17 @@ static const struct ble_gatt_svc_def gatt_svcs[] = {
                 .flags = BLE_GATT_CHR_F_WRITE | BLE_GATT_CHR_F_NOTIFY,
             },
             {
-                /* Datos del OTA: sin respuesta, que es lo que lo hace rapido.
-                   La perdida de un paquete la detecta la cuenta final. */
+                /*
+                 * Acepta las dos formas de escritura a proposito. Sin respuesta
+                 * es mas rapido, pero no tiene control de flujo: el celular
+                 * sigue mandando aunque el reloj este ocupado borrando un sector
+                 * de flash, y el enlace acaba cayendose a media transferencia.
+                 * Con respuesta, cada trozo espera a que el anterior este
+                 * grabado. A 15 ms de intervalo son unos 30 KB/s, de sobra.
+                 */
                 .uuid = &chr_ota_data.u,
                 .access_cb = chr_write,
-                .flags = BLE_GATT_CHR_F_WRITE_NO_RSP,
+                .flags = BLE_GATT_CHR_F_WRITE | BLE_GATT_CHR_F_WRITE_NO_RSP,
             },
             {
                 .uuid = &chr_info.u,

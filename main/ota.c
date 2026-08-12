@@ -5,6 +5,7 @@
 #include "esp_encrypted_img.h"
 #include "esp_log.h"
 #include "esp_ota_ops.h"
+#include "esp_pm.h"
 #include "esp_system.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -23,6 +24,45 @@ static esp_ota_handle_t s_handle;
 static esp_decrypt_handle_t s_dec;
 static const esp_partition_t *s_part;
 static bool s_activo;
+
+/*
+ * Durante la transferencia hay que apagar el ahorro de energia. Con light sleep
+ * el chip se duerme entre eventos de radio, y aqui estamos recibiendo a 15 ms
+ * mientras se borra y escribe flash: la mezcla es justo la que hace que el
+ * enlace se caiga a media actualizacion. Son unos segundos a plena potencia a
+ * cambio de que la actualizacion termine.
+ */
+#if CONFIG_PM_ENABLE
+static esp_pm_lock_handle_t s_lock_sleep;
+static esp_pm_lock_handle_t s_lock_cpu;
+static bool s_locks_tomados;
+#endif
+
+static void energia_full(bool encender)
+{
+#if CONFIG_PM_ENABLE
+    if (s_lock_sleep == NULL) {
+        if (esp_pm_lock_create(ESP_PM_NO_LIGHT_SLEEP, 0, "ota_sleep", &s_lock_sleep) != ESP_OK ||
+            esp_pm_lock_create(ESP_PM_CPU_FREQ_MAX, 0, "ota_cpu", &s_lock_cpu) != ESP_OK) {
+            ESP_LOGW(TAG, "sin bloqueos de energia; la transferencia puede ser inestable");
+            return;
+        }
+    }
+    if (encender == s_locks_tomados) {
+        return;
+    }
+    if (encender) {
+        esp_pm_lock_acquire(s_lock_cpu);
+        esp_pm_lock_acquire(s_lock_sleep);
+    } else {
+        esp_pm_lock_release(s_lock_sleep);
+        esp_pm_lock_release(s_lock_cpu);
+    }
+    s_locks_tomados = encender;
+#else
+    (void)encender;
+#endif
+}
 static uint32_t s_total;      /* bytes cifrados que anuncio el celular */
 static uint32_t s_recibido;   /* bytes cifrados que han llegado */
 
@@ -70,6 +110,8 @@ esp_err_t ota_begin(uint32_t tamano)
         esp_ota_abort(s_handle);
         return ESP_FAIL;
     }
+
+    energia_full(true);
 
     s_activo = true;
     s_total = tamano;
@@ -147,6 +189,7 @@ esp_err_t ota_end(void)
 
     esp_err_t err = esp_ota_end(s_handle);   /* valida cabecera y checksum */
     s_activo = false;
+    energia_full(false);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "imagen invalida: %s", esp_err_to_name(err));
         return err;
@@ -176,6 +219,7 @@ void ota_abort(void)
     s_activo = false;
     s_recibido = 0;
     s_total = 0;
+    energia_full(false);
     ESP_LOGW(TAG, "actualizacion cancelada");
 }
 
