@@ -94,7 +94,15 @@ static void pedir_conexion(bool rapida)
             .itvl_min = 80,               /* 100 ms */
             .itvl_max = 240,              /* 300 ms */
             .latency = 4,
-            .supervision_timeout = 600,   /* 6 s */
+            /*
+             * 20 s y no 6. Con latencia 4 el radio ya se salta 4 eventos por
+             * diseño, asi que 6 s dejaban margen para perder apenas un par mas.
+             * Cada interrupcion del sensor saca al chip del light sleep, y ese
+             * vaivén hace que se pierdan eventos de vez en cuando: con el margen
+             * corto, cada racha terminaba en desconexion. Esperar mas a darla
+             * por perdida no cuesta bateria; reconectar, si.
+             */
+            .supervision_timeout = 2000,  /* 20 s */
         };
     }
 

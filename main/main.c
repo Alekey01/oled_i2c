@@ -1249,10 +1249,16 @@ static void imu_task(void *arg)
             xTaskNotifyGive(s_display_h);
         }
 
-        /* Mientras el reloj siga en movimiento la interrupcion se redispara sin
-           parar. Este respiro la limita a cinco veces por segundo, que de sobra
-           mantiene la pantalla despierta sin freir el CPU. */
-        vTaskDelay(pdMS_TO_TICKS(200));
+        /*
+         * Mientras el reloj siga en movimiento la interrupcion se redispara sin
+         * parar, y cada una saca al chip del light sleep. A 200 ms eran cinco
+         * despertares por segundo llevandolo puesto, suficiente para que el
+         * radio perdiera eventos de conexion y el enlace se cayera cada poco.
+         *
+         * Dos segundos bastan: lo unico que hace falta es reiniciar la cuenta
+         * atras de la pantalla, y esa es de ocho.
+         */
+        vTaskDelay(pdMS_TO_TICKS(2000));
 
         ulTaskNotifyTake(pdTRUE, 0);
         gpio_intr_enable(CONFIG_APP_IMU_INT_GPIO);
