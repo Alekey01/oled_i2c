@@ -289,15 +289,6 @@ static void draw_clock(const struct tm *t, bool have_time)
         snprintf(buf, sizeof(buf), "%s", ble_sync_connected() ? "SINCRONIZANDO" : "ESPERA CELULAR");
     }
     text_center(24, buf, 1);
-
-    /* Version abajo a la derecha. La fecha va centrada y ocupa como mucho hasta
-       la columna 93, asi que aqui no se pisan. Sirve para saber de un vistazo si
-       una actualizacion entro, sin tener que reiniciar para ver el arranque. */
-    if (have_time) {
-        const esp_app_desc_t *desc = esp_app_get_description();
-        snprintf(buf, sizeof(buf), "%s", desc->version);
-        ssd1306_text(&s_oled, SSD1306_WIDTH - ssd1306_text_width(buf, 1) + 1, 24, buf, 1, true);
-    }
 }
 
 /* Vista 2: icono, temperatura, humedad y viento. */
@@ -419,6 +410,58 @@ static void actualizar_humor(void)
 }
 
 /*
+ * Fuente de 3x5 solo para la version. La de 5x7 ya esta en su tamaño minimo, y
+ * ahi el numero competiria con la hora y la temperatura; a 3x5 se lee cuando lo
+ * buscas y desaparece cuando no. Solo cubre lo que hace falta: digitos, punto,
+ * uve y espacio.
+ */
+#define MINI_W 3
+#define MINI_H 5
+
+static const char *mini_glifo(char c)
+{
+    static const char DIGITOS[10][MINI_H][MINI_W + 1] = {
+        {"###", "#.#", "#.#", "#.#", "###"},   /* 0 */
+        {".#.", "##.", ".#.", ".#.", "###"},   /* 1 */
+        {"###", "..#", "###", "#..", "###"},   /* 2 */
+        {"###", "..#", "###", "..#", "###"},   /* 3 */
+        {"#.#", "#.#", "###", "..#", "..#"},   /* 4 */
+        {"###", "#..", "###", "..#", "###"},   /* 5 */
+        {"###", "#..", "###", "#.#", "###"},   /* 6 */
+        {"###", "..#", "..#", "..#", "..#"},   /* 7 */
+        {"###", "#.#", "###", "#.#", "###"},   /* 8 */
+        {"###", "#.#", "###", "..#", "###"},   /* 9 */
+    };
+    static const char PUNTO[MINI_H][MINI_W + 1] = {"...", "...", "...", "...", ".#."};
+    static const char UVE[MINI_H][MINI_W + 1]   = {"#.#", "#.#", "#.#", "#.#", ".#."};
+    static const char NADA[MINI_H][MINI_W + 1]  = {"...", "...", "...", "...", "..."};
+
+    if (c >= '0' && c <= '9') return DIGITOS[c - '0'][0];
+    if (c == '.')             return PUNTO[0];
+    if (c == 'V' || c == 'v') return UVE[0];
+    return NADA[0];
+}
+
+/* Devuelve el ancho dibujado. Cada glifo ocupa 3 px mas 1 de separacion. */
+static int draw_mini(int x, int y, const char *s)
+{
+    int ancho = 0;
+    for (const char *p = s; *p != '\0'; p++) {
+        const char *g = mini_glifo(*p);
+        for (int r = 0; r < MINI_H; r++) {
+            for (int c = 0; c < MINI_W; c++) {
+                /* Las filas son cadenas contiguas de MINI_W+1 con su terminador. */
+                if (g[r * (MINI_W + 1) + c] == '#') {
+                    ssd1306_pixel(&s_oled, x + ancho + c, y + r, true);
+                }
+            }
+        }
+        ancho += MINI_W + 1;
+    }
+    return ancho > 0 ? ancho - 1 : 0;
+}
+
+/*
  * Elige pose, expresion y accesorio. Las reglas del clima ganan sobre el humor
  * aleatorio: si esta lloviendo, BitCat saca la sombrilla aunque le tocara estar
  * enojado. Cuando no hay nada que reportar vuelve al humor de siempre, que es lo
@@ -488,6 +531,13 @@ static void draw_cat(const weather_t *w, const struct tm *t, bool have_time)
        accesorios estan dibujados para caber dentro de la caja del sprite, que es
        lo unico que queda libre debajo de la hora y la temperatura. */
     bitcat_draw_acc(&s_oled, (SSD1306_WIDTH - BITCAT_W) / 2, 8, pose, expr, acc);
+
+    /* Version abajo a la izquierda, en el hueco que deja el gato. Va a este lado
+       y no al derecho porque ahi parpadea el aviso de datos viejos. */
+    const esp_app_desc_t *desc = esp_app_get_description();
+    char ver[40];   /* version[] son 32 caracteres; buf de la hora se queda corto */
+    snprintf(ver, sizeof(ver), "V %s", desc->version);
+    draw_mini(0, 27, ver);
 }
 
 /* Vista 4: BitCat cruza la pantalla de izquierda a derecha. */
@@ -816,8 +866,7 @@ static void render(void)
                 draw_bt_icon(1, 1);
             }
         } else if (stale && s_view != VIEW_GAME && (tm_now.tm_sec % 2) == 0) {
-            /* Arriba a la derecha, que abajo ya esta la version. */
-            ssd1306_rect(&s_oled, 124, 0, 4, 4, true);
+            ssd1306_rect(&s_oled, 124, 28, 4, 4, true);
         }
     }
 
