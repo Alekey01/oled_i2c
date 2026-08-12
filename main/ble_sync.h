@@ -27,7 +27,11 @@ typedef struct {
     void (*on_weather)(const weather_t *w);
 } ble_sync_cb_t;
 
+typedef void (*ble_sync_progress_cb_t)(const char *paso);
+
 esp_err_t ble_sync_start(const char *device_name, const ble_sync_cb_t *cb);
+esp_err_t ble_sync_start_debug(const char *device_name, const ble_sync_cb_t *cb,
+                               ble_sync_progress_cb_t progreso);
 
 /* true mientras un celular este conectado. */
 bool ble_sync_connected(void);

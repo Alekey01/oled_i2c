@@ -288,6 +288,15 @@ static void text_center(int y, const char *s, int scale)
     ssd1306_text(&s_oled, (SSD1306_WIDTH - w) / 2, y, s, scale, true);
 }
 
+static void boot_ble_status(const char *paso)
+{
+    char linea[24];
+    snprintf(linea, sizeof(linea), "BLE: %s", paso);
+    ssd1306_fill_rect(&s_oled, 0, 24, SSD1306_WIDTH, 8, false);
+    ssd1306_text(&s_oled, 0, 25, linea, 1, true);
+    ssd1306_flush(&s_oled);
+}
+
 /* Vista 1: hora, segundos en binario y fecha, las tres centradas. */
 static void draw_clock(const struct tm *t, bool have_time)
 {
@@ -1323,7 +1332,7 @@ void app_main(void)
     }
 
     const ble_sync_cb_t cb = {.on_time = on_time, .on_weather = on_weather};
-    err = ble_sync_start(ble_name, &cb);
+    err = ble_sync_start_debug(ble_name, &cb, boot_ble_status);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "BLE no pudo arrancar: %s", esp_err_to_name(err));
         ssd1306_clear(&s_oled);

@@ -56,6 +56,14 @@ static uint32_t s_ota_ultimo_aviso;
 
 static void advertise(void);
 
+static void avisar_paso(ble_sync_progress_cb_t progreso, const char *paso)
+{
+    ESP_LOGI(TAG, "arranque BLE: %s", paso);
+    if (progreso) {
+        progreso(paso);
+    }
+}
+
 /* ------------------------------------------------------------------- OTA */
 
 /*
@@ -476,37 +484,51 @@ bool ble_sync_connected(void)
 
 esp_err_t ble_sync_start(const char *device_name, const ble_sync_cb_t *cb)
 {
+    return ble_sync_start_debug(device_name, cb, NULL);
+}
+
+esp_err_t ble_sync_start_debug(const char *device_name, const ble_sync_cb_t *cb,
+                               ble_sync_progress_cb_t progreso)
+{
     s_name = device_name;
     s_cb = *cb;
 
+    avisar_paso(progreso, "nimble init");
     esp_err_t err = nimble_port_init();
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "nimble_port_init fallo: %s", esp_err_to_name(err));
         return err;
     }
 
+    avisar_paso(progreso, "callbacks");
     ble_hs_cfg.sync_cb = on_sync;
     ble_hs_cfg.reset_cb = on_reset;
 
+    avisar_paso(progreso, "servicios base");
     ble_svc_gap_init();
     ble_svc_gatt_init();
 
+    avisar_paso(progreso, "contar gatt");
     int rc = ble_gatts_count_cfg(gatt_svcs);
     if (rc != 0) {
         ESP_LOGE(TAG, "ble_gatts_count_cfg fallo: %d", rc);
         return ESP_FAIL;
     }
+    avisar_paso(progreso, "agregar gatt");
     rc = ble_gatts_add_svcs(gatt_svcs);
     if (rc != 0) {
         ESP_LOGE(TAG, "ble_gatts_add_svcs fallo: %d", rc);
         return ESP_FAIL;
     }
+    avisar_paso(progreso, "nombre");
     rc = ble_svc_gap_device_name_set(device_name);
     if (rc != 0) {
         ESP_LOGE(TAG, "no se pudo fijar el nombre: %d", rc);
         return ESP_FAIL;
     }
 
+    avisar_paso(progreso, "host task");
     nimble_port_freertos_init(host_task);
+    avisar_paso(progreso, "ok");
     return ESP_OK;
 }
