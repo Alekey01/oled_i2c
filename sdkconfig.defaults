@@ -28,7 +28,13 @@ CONFIG_BT_NIMBLE_ATT_PREFERRED_MTU=517
 # Diagnostico de un reinicio en bucle al arrancar BLE: asserts extra del host
 # NimBLE y medio segundo de margen para que el backtrace llegue a la consola
 # USB antes del reset.
-CONFIG_BT_NIMBLE_DEBUG=y
+# CONFIG_BT_NIMBLE_DEBUG activa las comprobaciones internas del host, y una de
+# ellas mata el arranque: ble_hs_startup_go llama a ble_hs_pvcy_set_default_irk
+# sin el lock del host, y el assert de ble_hs_id_addr aborta antes de que el BLE
+# llegue a anunciarse. El fallo de orden esta en NimBLE, no aqui; sin esta opcion
+# nadie lo comprueba y el arranque va bien. No la vuelvas a activar para depurar:
+# lo que rompe es justo la comprobacion.
+# CONFIG_BT_NIMBLE_DEBUG is not set
 CONFIG_ESP_SYSTEM_PANIC_REBOOT_DELAY_SECONDS=1
 
 # --- Ahorro de energia ---
