@@ -112,7 +112,15 @@ Comparte el bus I2C con el OLED — el panel responde en `0x3C` y el sensor en
 | GND | GND |
 | SDA | D4 (GPIO 5) |
 | SCL | D5 (GPIO 6) |
-| INT | D3 (GPIO 4) |
+| **INT** | D3 (GPIO 4) |
+| AD0 | **sin conectar** |
+
+> **Cuidado con AD0**, que está pegado a INT en el módulo. Es la entrada de
+> selección de dirección y lleva su propia resistencia a masa, así que si lo
+> conectas por error el pin queda clavado en bajo. El sensor responde igual por
+> I2C —parece que todo va bien— pero armar una interrupción por nivel sobre una
+> línea que nunca sube cuelga el arranque. El firmware lo detecta y avisa:
+> `GPIO 4 clavado en bajo: no parece la linea INT`.
 
 > Si tu módulo es un GY-521 con regulador tolera 5 V; la placa desnuda es de
 > **3.3 V y nada más**.

@@ -106,6 +106,11 @@ bool imu_disponible(void)
     return s_listo;
 }
 
+void imu_descartar(void)
+{
+    s_listo = false;
+}
+
 bool imu_atender_int(void)
 {
     if (!s_listo) {

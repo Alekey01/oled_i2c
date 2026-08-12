@@ -25,6 +25,11 @@ esp_err_t imu_init(i2c_master_bus_handle_t bus, uint8_t addr, uint8_t umbral, ui
 
 bool imu_disponible(void);
 
+/* Renuncia al sensor aunque haya respondido. Se usa cuando su linea INT no da
+   señales de vida: mejor quedarse sin despertar por movimiento que armar una
+   interrupcion que no se va a poder atender. */
+void imu_descartar(void);
+
 /* Limpia la interrupcion enclavada. Devuelve true si venia de movimiento. */
 bool imu_atender_int(void);
 

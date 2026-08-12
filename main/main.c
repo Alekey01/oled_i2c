@@ -1338,6 +1338,30 @@ void app_main(void)
     if (imu_init(s_oled.bus, CONFIG_APP_IMU_ADDR,
                  CONFIG_APP_IMU_UMBRAL, CONFIG_APP_IMU_DURACION_MS) != ESP_OK) {
         ESP_LOGW(TAG, "sin MPU-6050; la pantalla solo respondera al boton");
+    } else {
+        /*
+         * Con el enclavamiento recien soltado, la linea INT tiene que estar
+         * arriba. Si sigue abajo es que ese pin no es INT: pasa con AD0, que
+         * esta al lado en el modulo y lleva su propia resistencia a masa, asi
+         * que se queda clavado en bajo. Armar una interrupcion por nivel sobre
+         * el es una tormenta que no para nunca.
+         *
+         * El sensor contesta igual por I2C, asi que sin esta comprobacion todo
+         * parece correcto hasta que el arranque se cuelga sin explicacion.
+         */
+        const gpio_config_t sonda = {
+            .pin_bit_mask = 1ULL << CONFIG_APP_IMU_INT_GPIO,
+            .mode = GPIO_MODE_INPUT,
+            .pull_up_en = GPIO_PULLUP_ENABLE,
+            .intr_type = GPIO_INTR_DISABLE,
+        };
+        ESP_ERROR_CHECK(gpio_config(&sonda));
+        if (gpio_get_level(CONFIG_APP_IMU_INT_GPIO) == 0) {
+            ESP_LOGE(TAG, "GPIO %d clavado en bajo: no parece la linea INT del "
+                          "MPU-6050 (¿es AD0?). Se renuncia al sensor.",
+                     CONFIG_APP_IMU_INT_GPIO);
+            imu_descartar();
+        }
     }
 #endif
 
