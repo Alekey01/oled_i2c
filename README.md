@@ -16,7 +16,9 @@ RELOJ                      CLIMA                    24H              BITCAT     
 - **Segundos en 8 bits**: fila de 8 casillas, MSB a la izquierda; llena = 1, hueca = 0.
 - **Vista 24H**: una barra por hora con la temperatura del último día. Las horas
   sin dato salen como un punto en el piso. Se archiva una muestra por hora cada
-  vez que llega clima del celular.
+  vez que llega clima del celular, y **se guarda en NVS**, así que sobrevive a
+  los reinicios y a las actualizaciones por OTA. Solo se escribe al estrenar
+  hora: 24 escrituras al día.
 - **Vista BitCat**: el gato al centro con la hora arriba a la izquierda y el clima
   arriba a la derecha. Su expresión cambia sola cada 15 minutos, al azar entre
   normal, feliz, sorpresa, dormido, enojado y amor — salvo que el clima mande:
@@ -57,9 +59,24 @@ Pensado para funcionar con LiPo:
 | Light sleep automático | CPU a 80 MHz (mínimo 40) y el chip duerme entre eventos |
 | Botón por interrupción | Antes se sondeaba cada 20 ms, lo que despertaba el CPU 50 veces/s |
 | Refresco a 1 Hz alineado al segundo | Antes 4 Hz; solo el segundero binario cambia a esa velocidad |
+| Brillo del OLED según atención | 48 en reposo, 255 los 15 s siguientes a tocar el botón |
 | Apagado del OLED por inactividad | Desactivado por defecto (`APP_SCREEN_TIMEOUT_S=0`). Ponle segundos para activarlo |
 | Anuncio BLE a 500–1000 ms | Por defecto va a ~30 ms |
 | Conexión BLE a 300 ms con latencia 4 | El radio despierta como mucho cada 1.5 s |
+
+### Brillo
+
+El registro de contraste del SSD1306 es corriente de segmento, así que bajarlo
+ahorra de verdad: de 207 a 48 el panel gasta cerca de una cuarta parte. Pero a 48
+no se lee al sol.
+
+La salida es que el brillo siga a la atención. Si acabas de tocar el botón es que
+estás mirando la pantalla, así que sube a 255 durante 15 s y vuelve a bajar. En
+reposo —el 99% del tiempo— va al mínimo. De paso reparte el desgaste del OLED,
+que importa con la pantalla encendida de forma permanente.
+
+Se ajusta en `menuconfig` con `APP_OLED_CONTRAST`, `APP_OLED_CONTRAST_SUN` y
+`APP_OLED_SUN_S` (0 desactiva la subida).
 
 El controlador BLE del ESP32-S3 usa el **cristal principal** como reloj de baja
 potencia (`CONFIG_BT_CTRL_LPCLK_SEL_MAIN_XTAL`), así que el light sleep funciona

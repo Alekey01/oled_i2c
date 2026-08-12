@@ -20,6 +20,34 @@ menu "BitCat Watch (reloj 8 bits + clima por BLE)"
             tocar el boton, y vuelve al presionarlo. Con la pantalla apagada el
             reloj sigue contando y recibiendo por BLE.
 
+    config APP_OLED_CONTRAST
+        int "Brillo del OLED en reposo (0-255)"
+        default 48
+        range 1 255
+        help
+            El registro de contraste del SSD1306 es corriente de segmento, de
+            donde sale casi todo el consumo del panel. A 48 se ve bien en
+            interiores y gasta cerca de una cuarta parte que a 207, que era el
+            valor anterior. Tambien reparte el desgaste del OLED, que importa
+            con la pantalla encendida de forma permanente.
+
+    config APP_OLED_CONTRAST_SUN
+        int "Brillo al pulsar el boton (0-255)"
+        default 255
+        range 1 255
+        help
+            Al tocar el boton estas mirando la pantalla, asi que se sube al
+            maximo durante unos segundos. Es lo que la hace legible en exteriores
+            sin pagar ese brillo las 24 horas.
+
+    config APP_OLED_SUN_S
+        int "Segundos que dura el brillo alto"
+        default 15
+        range 0 300
+        help
+            Cada pulsacion reinicia la cuenta. 0 desactiva la subida y deja
+            siempre el brillo de reposo.
+
     config APP_LIGHT_SLEEP
         bool "Light sleep automatico"
         default y

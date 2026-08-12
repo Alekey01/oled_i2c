@@ -87,6 +87,18 @@ esp_err_t ssd1306_power(ssd1306_t *d, bool on)
     return cmd(d, on ? 0xAF : 0xAE);
 }
 
+/*
+ * El registro 0x81 ajusta la corriente de segmento, que es de donde sale casi
+ * todo el consumo del panel: bajarlo de 0xCF a 0x30 lo deja en torno a una
+ * cuarta parte. Tambien reparte el desgaste, que importa con la pantalla
+ * encendida siempre.
+ */
+esp_err_t ssd1306_contrast(ssd1306_t *d, uint8_t nivel)
+{
+    ESP_RETURN_ON_ERROR(cmd(d, 0x81), TAG, "set contraste");
+    return cmd(d, nivel);
+}
+
 esp_err_t ssd1306_flush(ssd1306_t *d)
 {
     ESP_RETURN_ON_ERROR(cmd(d, 0x21), TAG, "set col");       /* rango de columnas */

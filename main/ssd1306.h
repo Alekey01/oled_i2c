@@ -27,6 +27,10 @@ esp_err_t ssd1306_flush(ssd1306_t *d);
    contenido de su RAM; el framebuffer del ESP32 tampoco se toca. */
 esp_err_t ssd1306_power(ssd1306_t *d, bool on);
 
+/* Brillo del panel, 0..255. Es corriente de segmento, no post-proceso: bajarlo
+   ahorra bateria de verdad. */
+esp_err_t ssd1306_contrast(ssd1306_t *d, uint8_t nivel);
+
 void ssd1306_pixel(ssd1306_t *d, int x, int y, bool on);
 void ssd1306_fill_rect(ssd1306_t *d, int x, int y, int w, int h, bool on);
 void ssd1306_rect(ssd1306_t *d, int x, int y, int w, int h, bool on);

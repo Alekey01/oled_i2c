@@ -26,6 +26,7 @@
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
+#include "nvs.h"
 #include "nvs_flash.h"
 
 #include "bitcat.h"
@@ -90,6 +91,13 @@ typedef struct {
 
 static hist_t s_hist;
 
+/* La escritura en flash la hace la tarea de pantalla, no la del BLE: guardar
+   toma decenas de ms y no tienen por que caerle al callback de una escritura. */
+static volatile bool s_hist_por_guardar;
+
+#define NVS_NS   "bitcat"
+#define NVS_HIST "hist24"
+
 static volatile view_t s_view = VIEW_CLOCK;
 
 static TaskHandle_t s_display_h;
@@ -113,6 +121,54 @@ static int64_t s_expr_us;
 static const char *DIAS[7]   = {"DOM", "LUN", "MAR", "MIE", "JUE", "VIE", "SAB"};
 static const char *MESES[12] = {"ENE", "FEB", "MAR", "ABR", "MAY", "JUN",
                                 "JUL", "AGO", "SEP", "OCT", "NOV", "DIC"};
+
+/* -------------------------------------------- historial en flash (NVS) */
+
+/*
+ * Sin esto el historial se perdia con cualquier reinicio, incluido el del propio
+ * OTA: actualizar a media tarde borraba la grafica del dia.
+ *
+ * No hace falta descartar lo viejo al cargar. Cada ranura guarda la hora
+ * absoluta en que se escribio, y draw_trend() ya ignora las que no cuadran con
+ * la hora actual: un reloj apagado una semana muestra la grafica vacia solo.
+ */
+static void hist_cargar(void)
+{
+    nvs_handle_t h;
+    if (nvs_open(NVS_NS, NVS_READONLY, &h) != ESP_OK) {
+        return;   /* primera vez: todavia no existe el espacio */
+    }
+
+    size_t len = sizeof(s_hist);
+    esp_err_t err = nvs_get_blob(h, NVS_HIST, &s_hist, &len);
+    nvs_close(h);
+
+    if (err != ESP_OK || len != sizeof(s_hist)) {
+        memset(&s_hist, 0, sizeof(s_hist));   /* formato viejo o dato corrupto */
+        return;
+    }
+    ESP_LOGI(TAG, "historial de 24 h recuperado de nvs");
+}
+
+static void hist_guardar(const hist_t *h)
+{
+    nvs_handle_t n;
+    esp_err_t err = nvs_open(NVS_NS, NVS_READWRITE, &n);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "nvs_open fallo: %s", esp_err_to_name(err));
+        return;
+    }
+
+    err = nvs_set_blob(n, NVS_HIST, h, sizeof(*h));
+    if (err == ESP_OK) {
+        err = nvs_commit(n);
+    }
+    nvs_close(n);
+
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "no se pudo guardar el historial: %s", esp_err_to_name(err));
+    }
+}
 
 /* ------------------------------------------------ callbacks desde el BLE */
 
@@ -145,6 +201,13 @@ static void on_weather(const weather_t *w)
     if (s_time_set) {
         uint32_t hora = (uint32_t)((time(NULL) + s_tz_offset) / 3600);
         int i = hora % HIST_H;
+
+        /* Solo se pide guardar al estrenar hora, no en cada clima que llega:
+           son 24 escrituras al dia en vez de 144, y lo que se pierde en un corte
+           es como mucho la barra de la hora en curso. */
+        if (s_hist.hora[i] != hora) {
+            s_hist_por_guardar = true;
+        }
         s_hist.grados[i] = (int8_t)redondear(w->temp_c);
         s_hist.hora[i] = hora;
     }
@@ -771,8 +834,10 @@ static uint32_t ms_al_proximo_segundo(void)
 static void display_task(void *arg)
 {
     const int64_t timeout_us = (int64_t)CONFIG_APP_SCREEN_TIMEOUT_S * 1000000;
+    const int64_t sol_us = (int64_t)CONFIG_APP_OLED_SUN_S * 1000000;
     view_t last = s_view;
     bool ota_confirmado = false;
+    int contraste = -1;   /* -1 = todavia sin fijar */
 
     s_last_activity_us = esp_timer_get_time();
 
@@ -803,6 +868,14 @@ static void display_task(void *arg)
             ota_confirmado = true;
         }
 
+        if (s_hist_por_guardar) {
+            s_hist_por_guardar = false;
+            xSemaphoreTake(s_mux, portMAX_DELAY);
+            hist_t copia = s_hist;
+            xSemaphoreGive(s_mux);
+            hist_guardar(&copia);   /* fuera del mutex: la flash es lenta */
+        }
+
         ota_estado_t ota;
         ota_estado(&ota);
 
@@ -825,6 +898,25 @@ static void display_task(void *arg)
                deja al chip entrar en light sleep. */
             ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
             continue;
+        }
+
+        /*
+         * Brillo segun atencion. Si acabas de tocar el boton es que estas
+         * mirando la pantalla —y probablemente de pie, a la calle—, asi que se
+         * sube al maximo un rato. En reposo baja, que es donde se pasa el 99%
+         * del tiempo y de donde sale el ahorro.
+         *
+         * No hace falta temporizador propio: s_last_activity_us ya lleva la
+         * cuenta y esta tarea pasa por aqui una vez por segundo.
+         */
+        int deseado = (sol_us > 0 && esp_timer_get_time() - s_last_activity_us < sol_us)
+                    ? CONFIG_APP_OLED_CONTRAST_SUN
+                    : CONFIG_APP_OLED_CONTRAST;
+        if (deseado != contraste) {
+            xSemaphoreTake(s_draw_mux, portMAX_DELAY);
+            ssd1306_contrast(&s_oled, (uint8_t)deseado);
+            xSemaphoreGive(s_draw_mux);
+            contraste = deseado;
         }
 
         /* Se dibuja el cuadro nuevo antes de encender, para no mostrar por un
@@ -986,6 +1078,8 @@ void app_main(void)
     s_draw_mux = xSemaphoreCreateMutex();
     s_weather.wind_kmh = -1;
     s_weather.wind_deg = -1;
+
+    hist_cargar();
 
     ESP_ERROR_CHECK(ssd1306_init(&s_oled,
                                  CONFIG_APP_I2C_SDA_GPIO,
