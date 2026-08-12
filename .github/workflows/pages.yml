@@ -46,7 +46,18 @@ jobs:
             echo "Falta el secreto OTA_PRIVATE_KEY. Ver README, seccion OTA cifrado." >&2
             exit 1
           fi
-          printf '%s\n' "$CLAVE" | tr -d '\r' > main/ota_private_key.pem
+
+          # Se aceptan las dos formas. El PEM en crudo es comodo de mirar pero
+          # depende de que los saltos de linea sobrevivan al copiar y pegar, y
+          # ahi es donde se rompio. En base64 el secreto es una sola linea y no
+          # hay nada que se pueda mangar por el camino.
+          if printf '%s' "$CLAVE" | grep -q -- '-----BEGIN'; then
+            echo "secreto en formato PEM"
+            printf '%s\n' "$CLAVE" | tr -d '\r' > main/ota_private_key.pem
+          else
+            echo "secreto en base64, decodificando"
+            printf '%s' "$CLAVE" | tr -d ' \t\r\n' | base64 -d > main/ota_private_key.pem
+          fi
 
           # Un PEM al que se le hayan perdido los saltos de linea al copiarlo
           # sigue siendo un archivo con contenido, asi que el build no falla:

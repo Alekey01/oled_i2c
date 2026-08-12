@@ -329,10 +329,20 @@ para compilar y la borra al terminar, pase lo que pase.
 Sin ese archivo la compilación falla — es deliberado: es preferible a producir un
 firmware que no pueda actualizarse nunca.
 
-**El secreto tiene que ser el PEM completo**, con sus líneas `BEGIN`/`END` y un
-salto de línea por renglón: 38 líneas en total. Un PEM al que se le pierdan los
-saltos al copiarlo sigue siendo un archivo con contenido, así que el build no
-fallaría solo: produciría un firmware sin clave utilizable.
+El secreto acepta **dos formatos**:
+
+| Formato | Cómo generarlo |
+|---|---|
+| **base64** (recomendado) | `base64 -w0 main/ota_private_key.pem` |
+| PEM en crudo | copiar el archivo tal cual, 39 líneas |
+
+El base64 es una sola línea, así que no hay saltos que se puedan perder al
+copiar y pegar — que es exactamente por donde se rompió la primera vez. El PEM
+en crudo es más fácil de reconocer de un vistazo, pero depende de que el
+portapapeles y el formulario respeten los renglones.
+
+Un PEM al que se le pierdan los saltos sigue siendo un archivo con contenido,
+así que el build no fallaría solo: produciría un firmware sin clave utilizable.
 
 Eso es peor de lo que parece. El fallo **no se ve hasta la siguiente
 actualización**: el reloj arranca bien, acepta el inicio del OTA, y muere en el
