@@ -34,21 +34,25 @@ menu "BitCat Watch (reloj 8 bits + clima por BLE)"
 
     config APP_IMU_UMBRAL
         int "Umbral de movimiento"
-        default 20
+        default 8
         range 1 255
         depends on APP_IMU_INT_GPIO >= 0
         help
             Cuanto movimiento hace falta para despertar la pantalla. Mas bajo es
-            mas sensible. Hay que afinarlo con el reloj puesto: 20 es un punto de
-            partida, no un valor medido.
+            mas sensible. Si hay que agitar el reloj, bajalo.
 
     config APP_IMU_DURACION_MS
-        int "Milisegundos que debe durar el movimiento"
-        default 20
+        int "Muestras seguidas por encima del umbral"
+        default 1
         range 1 255
         depends on APP_IMU_INT_GPIO >= 0
         help
-            Filtra los golpes sueltos. Subelo si la pantalla se enciende sola
+            El registro se documenta en milisegundos, pero su contador solo
+            avanza cuando hay una muestra nueva. En modo ciclo a 20 Hz las
+            muestras van cada 50 ms, asi que cada unidad son 50 ms de movimiento
+            seguido, no 1 ms.
+
+            Con 1 basta un tiron. Subelo si la pantalla se enciende sola quieta
             sobre la mesa.
 
     config APP_SCREEN_TIMEOUT_S

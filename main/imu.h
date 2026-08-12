@@ -33,5 +33,11 @@ void imu_descartar(void);
 /* Limpia la interrupcion enclavada. Devuelve true si venia de movimiento. */
 bool imu_atender_int(void);
 
+/* Cuantos movimientos se han detectado desde el arranque. Se publica por BLE
+   para poder afinar los umbrales sin cable: con light sleep la consola USB no
+   sirve, y "la pantalla no se enciende" no distingue entre que la interrupcion
+   no llegue y que llegue pero no se atienda. */
+uint32_t imu_eventos(void);
+
 /* Aceleracion en mili-g. Cualquiera puede ser NULL. */
 esp_err_t imu_leer(int *x_mg, int *y_mg, int *z_mg);

@@ -12,6 +12,7 @@
 #include "services/gatt/ble_svc_gatt.h"
 
 #include "ble_sync.h"
+#include "imu.h"
 #include "ota.h"
 
 static const char *TAG = "ble_sync";
@@ -183,8 +184,9 @@ static int chr_info_read(uint16_t conn, uint16_t attr, struct ble_gatt_access_ct
     const esp_app_desc_t *desc = esp_app_get_description();
     const esp_partition_t *run = esp_ota_get_running_partition();
 
-    char info[64];
-    int n = snprintf(info, sizeof(info), "%s %s", desc->version, run->label);
+    char info[96];
+    int n = snprintf(info, sizeof(info), "%s %s mov=%lu",
+                     desc->version, run->label, (unsigned long)imu_eventos());
     if (n < 0) {
         return BLE_ATT_ERR_UNLIKELY;
     }

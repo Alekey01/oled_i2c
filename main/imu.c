@@ -30,6 +30,7 @@ static const char *TAG = "imu";
 
 static i2c_master_dev_handle_t s_dev;
 static bool s_listo;
+static uint32_t s_eventos;
 
 static esp_err_t escribir(uint8_t reg, uint8_t valor)
 {
@@ -86,7 +87,14 @@ esp_err_t imu_init(i2c_master_bus_handle_t bus, uint8_t addr, uint8_t umbral, ui
      * reposo, y el chip despertando 5 veces por segundo para muestrear. Es la
      * diferencia entre unos 3.9 mA y unas pocas decenas de microamperios.
      */
-    ESP_RETURN_ON_ERROR(escribir(REG_PWR_MGMT_2, 0x47), TAG, "pwr2");   /* 5 Hz + giro en standby */
+    /*
+     * 20 Hz y no 5. El contador de duracion solo avanza cuando hay una muestra
+     * nueva, asi que la frecuencia de muestreo marca cuanto movimiento seguido
+     * hace falta: a 5 Hz las muestras van cada 200 ms y exigir unas pocas
+     * significa exigir casi un segundo agitando. A 20 Hz responde al momento y
+     * la diferencia de consumo son decenas de microamperios.
+     */
+    ESP_RETURN_ON_ERROR(escribir(REG_PWR_MGMT_2, 0x87), TAG, "pwr2");   /* 20 Hz + giro en standby */
     ESP_RETURN_ON_ERROR(escribir(REG_PWR_MGMT_1, 0x28), TAG, "pwr1");   /* CYCLE + TEMP_DIS */
 
     s_listo = true;
@@ -120,7 +128,16 @@ bool imu_atender_int(void)
     if (leer(REG_INT_STATUS, &estado, 1) != ESP_OK) {
         return false;
     }
-    return (estado & INT_MOTION_BIT) != 0;
+    if ((estado & INT_MOTION_BIT) == 0) {
+        return false;
+    }
+    s_eventos++;
+    return true;
+}
+
+uint32_t imu_eventos(void)
+{
+    return s_eventos;
 }
 
 esp_err_t imu_leer(int *x_mg, int *y_mg, int *z_mg)

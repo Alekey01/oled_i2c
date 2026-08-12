@@ -684,10 +684,13 @@ function refrescarOtaUi() {
 
 async function leerVersionReloj() {
   const v = await chrInfo.readValue();
-  const texto = new TextDecoder().decode(v).trim();   // "1.0.0 app0"
+  const texto = new TextDecoder().decode(v).trim();   // "1.1.7 app0 mov=42"
   const [version, ranura] = texto.split(' ');
   versionReloj = { version, ranura: ranura || '?' };
-  log('ota', `el reloj tiene la ${version} en ${versionReloj.ranura}`);
+  // Se registra la cadena entera, no solo lo que se parsea: ahi viaja el
+  // contador de movimientos del sensor, que es como se afinan sus umbrales sin
+  // cable de por medio.
+  log('info', texto);
   refrescarOtaUi();
 }
 
