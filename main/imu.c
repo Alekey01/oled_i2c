@@ -90,6 +90,13 @@ esp_err_t imu_init(i2c_master_bus_handle_t bus, uint8_t addr, uint8_t umbral, ui
     ESP_RETURN_ON_ERROR(escribir(REG_PWR_MGMT_1, 0x28), TAG, "pwr1");   /* CYCLE + TEMP_DIS */
 
     s_listo = true;
+
+    /* Soltar el enclavamiento aqui mismo deja la linea INT arriba antes de que
+       nadie arme la interrupcion del GPIO. Con ella abajo, habilitar una
+       interrupcion por nivel sin manejador cuelga el arranque. */
+    uint8_t descarte = 0;
+    leer(REG_INT_STATUS, &descarte, 1);
+
     ESP_LOGI(TAG, "MPU-6050 en 0x%02X, umbral %u, duracion %u ms", addr, umbral, duracion_ms);
     return ESP_OK;
 }

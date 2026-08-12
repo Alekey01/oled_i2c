@@ -1302,6 +1302,22 @@ void app_main(void)
     s_weather.wind_kmh = -1;
     s_weather.wind_deg = -1;
 
+    /*
+     * Dejar limpios los pines con interrupcion antes de tocar nada mas.
+     *
+     * Un reinicio por software no limpia la configuracion del GPIO, asi que una
+     * interrupcion por nivel armada en el arranque anterior sigue armada. Si
+     * ademas la linea esta abajo —y la del MPU lo esta, es activa a nivel bajo y
+     * queda enclavada—, en cuanto gpio_install_isr_service() habilita la
+     * interrupcion empieza una tormenta sin manejador que la desactive, y el
+     * perro guardian de interrupciones mata el arranque. Que a su vez reinicia
+     * por software y deja el terreno igual: se realimenta solo.
+     */
+    gpio_reset_pin(CONFIG_APP_BUTTON_GPIO);
+#if CONFIG_APP_IMU_INT_GPIO >= 0
+    gpio_reset_pin(CONFIG_APP_IMU_INT_GPIO);
+#endif
+
     hist_cargar();
 
     /* Sin APP_BATTERY_GPIO configurado no hace nada y no falla. */
