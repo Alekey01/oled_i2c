@@ -9,6 +9,10 @@ on:
       - 'partitions.csv'
       - 'sdkconfig.defaults'
       - 'CMakeLists.txt'
+      # Sin esta, subir la version no republicaba: la pagina seguiria ofreciendo
+      # la anterior y diria que el reloj ya esta al dia.
+      - 'version.txt'
+      - 'ota_public_key.pem'
       - '.github/workflows/pages.yml'
   workflow_dispatch:
 
