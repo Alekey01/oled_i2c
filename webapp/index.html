@@ -714,6 +714,13 @@ function onOtaNotify(ev) {
     log('ota', `el reloj confirma ${Math.round(dato.recibido / 1024)} KB`);
     return;
   }
+  // El reloj manda su motivo aunque nadie lo este esperando. Antes se quedaba
+  // guardado sin que nadie lo leyera, y era justo el dato que hacia falta.
+  if (dato.estado === OTA_ERROR) {
+    const causa = {1: 'no pudo preparar la ranura', 2: 'la imagen no valido',
+                   3: 'cancelado', 4: 'no pudo escribir o descifrar'}[dato.err];
+    log('err', `el reloj informa: ${causa || 'error ' + dato.err}`, 'err');
+  }
   if (otaEspera) {
     const resolver = otaEspera;
     otaEspera = null;
@@ -807,13 +814,20 @@ async function enviarFirmware(datos, nombre) {
         if (/disconnect/i.test(e.message) || !conectado()) {
           throw new Error(`se perdio el enlace al ${pintarBarra(off, datos.length)}%`);
         }
-        // Si no, casi siempre es que el MTU negociado es menor del que pedimos.
-        if (trozo > OTA_CHUNK_MIN) {
+        /*
+         * Partir el trozo solo arregla un problema: que el MTU negociado sea
+         * menor del que pedimos. Y eso solo puede pasar antes de que entre el
+         * primer byte. Si ya iba avanzando, o si el reloj rechaza hasta trozos
+         * minusculos, el fallo es de otra cosa y partir mas solo entierra el
+         * mensaje que dice cual.
+         */
+        if (off === 0 && trozo > OTA_CHUNK_MIN) {
           trozo = Math.floor(trozo / 2);
-          log('ota', `bajando el trozo a ${trozo} bytes`);
+          log('ota', `el reloj rechazo ${parte.length} bytes (${e.message}), probando con ${trozo}`);
           continue;
         }
-        throw e;
+        throw new Error(`el reloj rechazo los datos al ${pintarBarra(off, datos.length)}%`
+                      + ` (${e.message})`);
       }
       off += parte.length;
 

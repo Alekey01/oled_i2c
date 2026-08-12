@@ -46,7 +46,18 @@ jobs:
             echo "Falta el secreto OTA_PRIVATE_KEY. Ver README, seccion OTA cifrado." >&2
             exit 1
           fi
-          printf '%s\n' "$CLAVE" > main/ota_private_key.pem
+          printf '%s\n' "$CLAVE" | tr -d '\r' > main/ota_private_key.pem
+
+          # Un PEM al que se le hayan perdido los saltos de linea al copiarlo
+          # sigue siendo un archivo con contenido, asi que el build no falla:
+          # produce un firmware sin clave utilizable que solo se descubre cuando
+          # una actualizacion muere en el primer trozo. Mejor reventar aqui.
+          if ! openssl rsa -in main/ota_private_key.pem -check -noout; then
+            echo "OTA_PRIVATE_KEY no es una clave RSA valida." >&2
+            echo "Debe ser el PEM completo, con BEGIN/END y un salto por linea." >&2
+            exit 1
+          fi
+          echo "clave valida, $(grep -c '' main/ota_private_key.pem) lineas"
 
       # Compilar aqui es lo que permite que la pagina ofrezca el firmware sin
       # tener que llevar el .bin al celular a mano.
@@ -56,6 +67,27 @@ jobs:
           esp_idf_version: v5.5.4
           target: esp32s3
           path: '.'
+
+      # Comprobar que la clave acabo DENTRO del binario. EMBED_TXTFILES no valida
+      # el contenido del archivo, asi que un PEM mal formado se incrusta igual y
+      # produce un reloj incapaz de descifrar ninguna actualizacion futura: un
+      # fallo que no se ve hasta el siguiente OTA, y para entonces ya solo se
+      # arregla por cable.
+      - name: Comprobar que la clave quedo incrustada
+        run: |
+          python3 - <<'PY'
+          import sys
+
+          pem = open('main/ota_private_key.pem', 'rb').read().replace(b'\r\n', b'\n')
+          cuerpo = [l for l in pem.split(b'\n') if l and not l.startswith(b'-----')]
+          binario = open('build/oled_i2c.bin', 'rb').read()
+
+          faltan = [l for l in cuerpo if l not in binario]
+          print('lineas de la clave: %d, ausentes del binario: %d'
+                % (len(cuerpo), len(faltan)))
+          if faltan:
+              sys.exit('La clave no esta en el firmware; no se publica nada.')
+          PY
 
       - name: Cifrar y empaquetar el firmware junto a la pagina
         run: |

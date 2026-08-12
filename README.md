@@ -329,6 +329,25 @@ para compilar y la borra al terminar, pase lo que pase.
 Sin ese archivo la compilación falla — es deliberado: es preferible a producir un
 firmware que no pueda actualizarse nunca.
 
+**El secreto tiene que ser el PEM completo**, con sus líneas `BEGIN`/`END` y un
+salto de línea por renglón: 38 líneas en total. Un PEM al que se le pierdan los
+saltos al copiarlo sigue siendo un archivo con contenido, así que el build no
+fallaría solo: produciría un firmware sin clave utilizable.
+
+Eso es peor de lo que parece. El fallo **no se ve hasta la siguiente
+actualización**: el reloj arranca bien, acepta el inicio del OTA, y muere en el
+primer trozo de datos cuando toca desenvolver la clave AES. Y para entonces ya
+solo se arregla por cable, porque el firmware que no puede descifrar tampoco
+puede recibir el que lo arreglaría.
+
+Por eso el workflow hace dos comprobaciones antes de publicar:
+
+1. `openssl rsa -check` sobre el PEM recién escrito
+2. Que las líneas de la clave aparezcan **dentro** de `build/oled_i2c.bin`
+
+La segunda es la que importa: `EMBED_TXTFILES` no valida el contenido del archivo
+que incrusta.
+
 ## Versiones
 
 | Qué | Dónde se sube |
