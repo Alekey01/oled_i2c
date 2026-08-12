@@ -696,7 +696,15 @@ const escribirCon = (chr, d) =>
   chr.writeValueWithResponse ? chr.writeValueWithResponse(d) : chr.writeValue(d);
 
 let otaEspera = null;
+let otaPendiente = null;
 
+/*
+ * El firmware notifica desde dentro del callback de la escritura, es decir antes
+ * de que salga la respuesta ATT. Visto desde aqui, la notificacion puede llegar
+ * antes de que se resuelva la promesa del write: si en ese momento nadie la
+ * esperaba, antes se perdia y la transferencia moria con "el reloj no
+ * respondio". Por eso se guarda la ultima sin reclamar.
+ */
 function onOtaNotify(ev) {
   const v = ev.target.value;
   const dato = { estado: v.getUint8(0), recibido: v.getUint32(1, true), err: v.getUint8(5) };
@@ -710,10 +718,17 @@ function onOtaNotify(ev) {
     const resolver = otaEspera;
     otaEspera = null;
     resolver(dato);
+  } else {
+    otaPendiente = dato;
   }
 }
 
 function esperarOta(ms) {
+  if (otaPendiente) {
+    const d = otaPendiente;
+    otaPendiente = null;
+    return Promise.resolve(d);
+  }
   return new Promise((resolve, reject) => {
     const t = setTimeout(() => {
       otaEspera = null;
@@ -740,6 +755,7 @@ async function enviarFirmware(datos, nombre) {
   }
 
   otaEnCurso = true;
+  otaPendiente = null;    // nada de arrastrar respuestas de un intento anterior
   pararTimers();          // el enlace es para el firmware, nada de hora ni clima
   setEstado('Actualizando', 'wait');
   $('progreso').hidden = false;
@@ -753,9 +769,12 @@ async function enviarFirmware(datos, nombre) {
     const inicio = new DataView(new ArrayBuffer(5));
     inicio.setUint8(0, OTA_START);
     inicio.setUint32(1, datos.length, true);
-    await escribirCon(chrOtaCtrl, inicio);
 
-    const listo = await esperarOta(15000);
+    // El receptor se arma antes de escribir, no despues: la respuesta del reloj
+    // puede adelantarse a la confirmacion de la propia escritura.
+    const esperaInicio = esperarOta(15000);
+    await escribirCon(chrOtaCtrl, inicio);
+    const listo = await esperaInicio;
     if (listo.estado !== OTA_LISTO) throw new Error('el reloj rechazo la actualizacion');
     log('ota', 'ranura preparada, enviando');
 
@@ -786,8 +805,9 @@ async function enviarFirmware(datos, nombre) {
       }
     }
 
+    const esperaFin = esperarOta(20000);
     await escribirCon(chrOtaCtrl, new Uint8Array([OTA_END]));
-    const fin = await esperarOta(20000);
+    const fin = await esperaFin;
     if (fin.estado !== OTA_OK) throw new Error('la imagen no paso la validacion');
 
     pintarBarra(1, 1);

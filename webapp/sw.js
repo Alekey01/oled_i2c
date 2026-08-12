@@ -9,7 +9,7 @@
  */
 // Sube este numero al publicar: es lo que dispara el borrado del cache anterior.
 // Debe ir a la par con "version" en manifest.json, que es lo que ve el usuario.
-const CACHE = 'bitcat-watch-v1.0.0';
+const CACHE = 'bitcat-watch-v1.0.1';
 
 const CASCO = [
   './',
