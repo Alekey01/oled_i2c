@@ -32,6 +32,7 @@
 #include "nvs.h"
 #include "nvs_flash.h"
 
+#include "anim.h"
 #include "battery.h"
 #include "bitcat.h"
 #include "ble_sync.h"
@@ -48,9 +49,29 @@ typedef enum {
     VIEW_TREND,    /* temperatura de las ultimas 24 h */
     VIEW_CAT,      /* BitCat en medio, hora y clima chicos arriba */
     VIEW_WALK,     /* BitCat cruzando la pantalla */
+    VIEW_ANIM,     /* animacion dibujada en el celular; se salta si no hay */
     VIEW_COUNT,    /* fin del ciclo del boton corto */
     VIEW_GAME,     /* fuera del ciclo: se entra con pulsacion larga desde WALK */
 } view_t;
+
+/*
+ * Avanza o retrocede en el ciclo, saltandose las vistas que ahora mismo no
+ * tienen nada que enseñar. Sin esto, un reloj recien estrenado tendria en medio
+ * del ciclo una pantalla que solo dice que no hay animacion.
+ *
+ * El limite de vueltas es por si algun dia se apagan todas: sin el, el bucle no
+ * terminaria nunca.
+ */
+static view_t vista_vecina(view_t v, int paso)
+{
+    for (int i = 0; i < VIEW_COUNT; i++) {
+        v = (view_t)((v + VIEW_COUNT + paso) % VIEW_COUNT);
+        if (v != VIEW_ANIM || anim_disponible()) {
+            return v;
+        }
+    }
+    return VIEW_CLOCK;
+}
 
 /* Refresco rapido solo en las vistas animadas; las otras van a 1 Hz. */
 #define REFRESH_MS_WALK   80
@@ -614,6 +635,35 @@ static void walk_step(void)
     }
 }
 
+/*
+ * Vista 6: la animacion que hayas dibujado en el celular.
+ *
+ * Los cuadros ya vienen en el formato del framebuffer, asi que dibujar es
+ * copiarlos encima. Se copia solo lo que quepa: la animacion esta hecha para 32
+ * px de alto y en un panel de 64 ocuparia la mitad de arriba en vez de
+ * desbordarse.
+ */
+static int s_anim_i;
+
+static void draw_anim(void)
+{
+    const uint8_t *f = anim_frame((uint8_t)s_anim_i);
+    if (f == NULL) {
+        text_center(12, "SIN ANIMACION", 1);
+        return;
+    }
+    int paginas = s_oled.pages < ANIM_PAGES ? s_oled.pages : ANIM_PAGES;
+    memcpy(s_oled.fb, f, (size_t)paginas * SSD1306_WIDTH);
+}
+
+static void anim_step(void)
+{
+    uint8_t n = anim_frames();
+    if (n > 0) {
+        s_anim_i = (s_anim_i + 1) % n;
+    }
+}
+
 /* ----------------------------------------------------------------- juego */
 
 /*
@@ -880,6 +930,9 @@ static void render(void)
         case VIEW_WALK:
             draw_walk();
             break;
+        case VIEW_ANIM:
+            draw_anim();
+            break;
         case VIEW_GAME:
             draw_game();
             break;
@@ -963,6 +1016,8 @@ static void display_task(void *arg)
                 s_walk_x = -BITCAT_W;
                 s_walk_tick = 0;
                 s_wave_left = 0;
+            } else if (last == VIEW_ANIM) {
+                s_anim_i = 0;   /* que siempre arranque por el primer cuadro */
             } else if (last == VIEW_GAME) {
                 /* El reinicio vive aqui y no en la tarea del boton para que un
                    solo hilo sea dueño del estado del juego. */
@@ -994,6 +1049,10 @@ static void display_task(void *arg)
             xSemaphoreGive(s_mux);
             hist_guardar(&copia);   /* fuera del mutex: la flash es lenta */
         }
+
+        /* Igual que el historial: dos kilobytes a la flash no pueden salir del
+           callback de una escritura BLE. */
+        anim_guardar_si_toca();
 
         ota_estado_t ota;
         ota_estado(&ota);
@@ -1054,6 +1113,10 @@ static void display_task(void *arg)
             walk_step();
             render();
             espera_ms = REFRESH_MS_WALK;
+        } else if (s_view == VIEW_ANIM) {
+            anim_step();
+            render();
+            espera_ms = anim_delay_ms();
         } else {
             render();
             espera_ms = ms_al_proximo_segundo();
@@ -1087,7 +1150,7 @@ static void boton_corto(void)
         game_pedir_salto();
         return;
     }
-    s_view = (s_view + 1) % VIEW_COUNT;
+    s_view = vista_vecina(s_view, +1);
     ESP_LOGI(TAG, "vista %d", s_view);
 }
 
@@ -1388,8 +1451,7 @@ static void agite_cambiar_vista(int sentido)
 #if CONFIG_APP_IMU_AGITE_INVERTIR
     sentido = -sentido;
 #endif
-    s_view = sentido > 0 ? (s_view + 1) % VIEW_COUNT
-                         : (s_view + VIEW_COUNT - 1) % VIEW_COUNT;
+    s_view = vista_vecina(s_view, sentido > 0 ? +1 : -1);
     ESP_LOGI(TAG, "agite %s: vista %d", sentido > 0 ? "adelante" : "atras", s_view);
 }
 
@@ -1574,6 +1636,7 @@ void app_main(void)
 #endif
 
     hist_cargar();
+    anim_cargar();
 
     /* Sin APP_BATTERY_GPIO configurado no hace nada y no falla. */
     if (battery_init() != ESP_OK) {

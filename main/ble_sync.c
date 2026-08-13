@@ -13,6 +13,7 @@
 #include "services/gap/ble_svc_gap.h"
 #include "services/gatt/ble_svc_gatt.h"
 
+#include "anim.h"
 #include "ble_sync.h"
 #include "imu.h"
 #include "ota.h"
@@ -30,6 +31,17 @@ static const ble_uuid128_t chr_weather  = UUID128_APP(0x03, 0x00);
 static const ble_uuid128_t chr_ota_ctrl = UUID128_APP(0x04, 0x00);
 static const ble_uuid128_t chr_ota_data = UUID128_APP(0x05, 0x00);
 static const ble_uuid128_t chr_info     = UUID128_APP(0x06, 0x00);
+static const ble_uuid128_t chr_anim     = UUID128_APP(0x07, 0x00);
+
+/* Ordenes de la caracteristica de animacion. */
+#define ANIM_CMD_START  0x01   /* + cuadros(1) + retardo en decenas de ms(1) */
+#define ANIM_CMD_DATA   0x02   /* + offset(2, LE) + bytes */
+#define ANIM_CMD_END    0x03
+#define ANIM_CMD_BORRAR 0x04
+
+/* Cota del trozo de animacion. Son 2 KB en total, asi que no merece la pena
+   apurar el MTU: con trozos comodos entra en una decena de escrituras. */
+#define ANIM_CHUNK_MAX 256
 
 /* Ordenes que acepta la caracteristica de control del OTA. */
 #define OTA_CMD_START  0x01   /* + uint32 tamano */
@@ -280,6 +292,41 @@ static int ota_ctrl_write(const uint8_t *buf, uint16_t len)
     }
 }
 
+/* ------------------------------------------------------------- ANIMACION */
+
+static int anim_ctrl_write(const uint8_t *buf, uint16_t len)
+{
+    if (len < 1) {
+        return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
+    }
+
+    switch (buf[0]) {
+    case ANIM_CMD_START:
+        if (len != 3) {
+            return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
+        }
+        return anim_begin(buf[1], buf[2]) == ESP_OK ? 0 : BLE_ATT_ERR_UNLIKELY;
+
+    case ANIM_CMD_DATA: {
+        if (len < 4) {
+            return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
+        }
+        uint16_t off = (uint16_t)buf[1] | ((uint16_t)buf[2] << 8);
+        return anim_write(off, &buf[3], len - 3) == ESP_OK ? 0 : BLE_ATT_ERR_UNLIKELY;
+    }
+
+    case ANIM_CMD_END:
+        return anim_end() == ESP_OK ? 0 : BLE_ATT_ERR_UNLIKELY;
+
+    case ANIM_CMD_BORRAR:
+        anim_borrar();
+        return 0;
+
+    default:
+        return BLE_ATT_ERR_UNLIKELY;
+    }
+}
+
 /* ------------------------------------------------------------------ GATT */
 
 /*
@@ -363,6 +410,20 @@ static int chr_write(uint16_t conn, uint16_t attr, struct ble_gatt_access_ctxt *
             notificar_ota(OTA_EST_PROGRESO, 0);
         }
         return 0;
+    }
+
+    /*
+     * La animacion tambien va aparte: sus trozos no caben en los 16 bytes que
+     * bastan para hora y clima. Buffer propio y no el del OTA, que aunque nunca
+     * coinciden, compartirlo ataria dos cosas que no tienen nada que ver.
+     */
+    if (ble_uuid_cmp(ctxt->chr->uuid, &chr_anim.u) == 0) {
+        static uint8_t datos[ANIM_CHUNK_MAX];
+        uint16_t len = 0;
+        if (ble_hs_mbuf_to_flat(ctxt->om, datos, sizeof(datos), &len) != 0) {
+            return BLE_ATT_ERR_UNLIKELY;
+        }
+        return anim_ctrl_write(datos, len);
     }
 
     uint8_t buf[16];
@@ -464,6 +525,14 @@ static const struct ble_gatt_svc_def gatt_svcs[] = {
                 .uuid = &chr_info.u,
                 .access_cb = chr_info_read,
                 .flags = BLE_GATT_CHR_F_READ,
+            },
+            {
+                /* Solo con respuesta: son 2 KB y llegan por trozos numerados,
+                   asi que perder uno en silencio dejaria un cuadro con basura
+                   dentro y sin forma de enterarse. */
+                .uuid = &chr_anim.u,
+                .access_cb = chr_write,
+                .flags = BLE_GATT_CHR_F_WRITE,
             },
             {0},
         },

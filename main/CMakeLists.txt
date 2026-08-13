@@ -1,7 +1,7 @@
 # La clave privada del OTA cifrado viaja dentro del binario: es lo que hace que
 # solo el reloj pueda descifrar la imagen publicada. No esta en el repositorio,
 # se genera una vez y se guarda aparte (ver README).
-idf_component_register(SRCS "bitcat.c" "weather_icon.c" "main.c"
+idf_component_register(SRCS "anim.c" "bitcat.c" "weather_icon.c" "main.c"
                             "ssd1306.c"
                             "ble_sync.c"
                             "weather.c"

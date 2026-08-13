@@ -129,6 +129,29 @@
     color: var(--dim);
   }
 
+  /* --- editor de animacion --- */
+  #lienzo {
+    display: block; width: 100%; height: auto;
+    margin-bottom: .85rem;
+    border: 2px solid var(--line);
+    background: var(--panel);
+    /* Sin esto el navegador se queda el gesto para desplazar la pagina y no
+       llega ni un solo trazo. */
+    touch-action: none;
+    cursor: crosshair;
+  }
+  .tira { display: flex; gap: .5rem; margin-bottom: .85rem; }
+  .tira button { margin: 0; padding: .55rem .2rem; font-size: 11px; letter-spacing: .08em; }
+  .tira button.on { background: var(--acc); color: var(--acc-fg); }
+  .cuadro { position: relative; }
+  .cuadro .n {
+    position: absolute; top: -2px; right: 2px;
+    font-size: 8px; color: var(--dim);
+  }
+  #velocidad { width: 100%; margin: 0 0 .85rem; accent-color: var(--acc); }
+  .par { display: flex; gap: .5rem; }
+  .par button { margin-bottom: .85rem; }
+
   /* --- consola --- */
   h2 {
     margin: 1.9rem 0 .55rem;
@@ -181,6 +204,33 @@
 <div id="progreso" hidden><div id="barra"></div></div>
 <button id="remoto" disabled>Actualizar</button>
 
+<h2>ANIMACION</h2>
+<canvas id="lienzo" width="512" height="128"
+        aria-label="Lienzo de 128 por 32 pixeles"></canvas>
+
+<div class="tira" id="tiraCuadros"></div>
+
+<div class="tira">
+  <button id="pincel" class="on">Pintar</button>
+  <button id="goma" class="sec">Borrar</button>
+  <button id="limpiar" class="sec">Vaciar</button>
+</div>
+
+<div class="tira">
+  <button id="copiar" class="sec">Copiar anterior</button>
+  <button id="reproducir" class="sec">Probar</button>
+</div>
+
+<input type="range" id="velocidad" min="4" max="60" value="15"
+       aria-label="Velocidad de la animacion">
+<p id="vVel" class="fila" style="border:0;padding:0;color:var(--dim);font-size:11px">
+  <span>150 ms por cuadro</span></p>
+
+<div class="par">
+  <button id="enviarAnim" disabled>Enviar al reloj</button>
+  <button id="borrarAnim" class="sec" disabled>Quitar</button>
+</div>
+
 <h2>ESTADO DEL DISPOSITIVO</h2>
 <div id="consola" role="log" aria-live="polite"></div>
 <p id="pie">BitCat Watch</p>
@@ -192,6 +242,16 @@ const CHR_WEATHER  = '5c8b0003-7a2e-4f1d-9c3a-1b2d4e6f8a90';
 const CHR_OTA_CTRL = '5c8b0004-7a2e-4f1d-9c3a-1b2d4e6f8a90';
 const CHR_OTA_DATA = '5c8b0005-7a2e-4f1d-9c3a-1b2d4e6f8a90';
 const CHR_INFO     = '5c8b0006-7a2e-4f1d-9c3a-1b2d4e6f8a90';
+const CHR_ANIM     = '5c8b0007-7a2e-4f1d-9c3a-1b2d4e6f8a90';
+
+// Animacion: 128x32 en cuatro cuadros.
+const ANIM_W = 128, ANIM_H = 32, ANIM_PAGES = ANIM_H / 8;
+const ANIM_FRAME_BYTES = ANIM_W * ANIM_PAGES;   // 512
+const ANIM_FRAMES = 4;
+const ANIM_START = 1, ANIM_DATA = 2, ANIM_END = 3, ANIM_BORRAR = 4;
+// Deja sitio de sobra bajo cualquier MTU que negocie el celular; son 2 KB en
+// total, asi que apurar no ahorraria un tiempo que se note.
+const ANIM_CHUNK = 240;
 
 // Cabecera de esp_encrypted_img: el .bin publicado va cifrado, asi que ya no
 // empieza con el 0xE9 de las imagenes de ESP-IDF sino con este magico.
@@ -216,7 +276,7 @@ const RECONEXION_MAX_MS = 30000;
 const $ = id => document.getElementById(id);
 
 let device = null, chrTime = null, chrWeather = null;
-let chrOtaCtrl = null, chrOtaData = null, chrInfo = null;
+let chrOtaCtrl = null, chrOtaData = null, chrInfo = null, chrAnim = null;
 let otaEnCurso = false;
 let firmwarePublicado = null;
 let versionReloj = null;
@@ -469,6 +529,16 @@ async function abrirGatt(etiqueta) {
     log('ota', 'este firmware no acepta actualizacion por bluetooth');
   }
 
+  // En su propio try: la animacion llego despues del OTA, asi que un reloj
+  // puede tener lo uno sin lo otro y perder el OTA por esto seria absurdo.
+  try {
+    chrAnim = await service.getCharacteristic(CHR_ANIM);
+  } catch (e) {
+    chrAnim = null;
+    log('anim', 'este firmware no acepta animaciones');
+  }
+  refrescarAnimUi();
+
   esperaReconexion = RECONEXION_MIN_MS;
   setEstado('Conectado', 'on');
   log('gatt', `${etiqueta} a ${device.name}`, 'ok');
@@ -512,6 +582,8 @@ function reintentar() {
 
 function alDesconectar() {
   pararTimers();
+  chrAnim = null;
+  refrescarAnimUi();
   if (desconexionManual) {
     setEstado('Desconectado', '');
     log('gatt', 'desconectado por el usuario');
@@ -693,6 +765,252 @@ async function leerVersionReloj() {
   log('info', texto);
   refrescarOtaUi();
 }
+
+/* ------------------------------------------------ editor de animacion --- */
+
+/*
+ * Cada cuadro es un pixel por byte mientras se dibuja, que es comodo de tocar, y
+ * solo se empaqueta al formato del reloj justo antes de enviarlo.
+ */
+const cuadrosAnim = Array.from({length: ANIM_FRAMES},
+                               () => new Uint8Array(ANIM_W * ANIM_H));
+let cuadroActual = 0;
+let herramienta = 1;          // 1 = pintar, 0 = borrar
+let previa = null;            // temporizador de la reproduccion
+let enviandoAnim = false;
+
+const lz = $('lienzo'), lzx = lz.getContext('2d');
+const ESCALA = lz.width / ANIM_W;   // 4 px de pantalla por pixel del reloj
+
+const GUARDADO = 'bitcat-anim';
+
+function guardarLocal() {
+  try {
+    localStorage.setItem(GUARDADO, JSON.stringify({
+      v: 1,
+      vel: +$('velocidad').value,
+      cuadros: cuadrosAnim.map(c => Array.from(c)),
+    }));
+  } catch (e) { /* modo privado o sin espacio: el dibujo se pierde y ya */ }
+}
+
+function cargarLocal() {
+  try {
+    const d = JSON.parse(localStorage.getItem(GUARDADO) || 'null');
+    if (!d || d.v !== 1 || !Array.isArray(d.cuadros)) return;
+    d.cuadros.forEach((c, i) => {
+      if (i < ANIM_FRAMES && c.length === ANIM_W * ANIM_H) cuadrosAnim[i].set(c);
+    });
+    if (d.vel) $('velocidad').value = d.vel;
+  } catch (e) { /* dato viejo o corrupto: se empieza en blanco */ }
+}
+
+function pintarLienzo(indice = cuadroActual) {
+  const css = getComputedStyle(document.body);
+  lzx.fillStyle = css.getPropertyValue('--panel');
+  lzx.fillRect(0, 0, lz.width, lz.height);
+
+  // Calco del cuadro anterior, muy tenue: sin esta referencia es casi imposible
+  // encadenar cuatro dibujos que se muevan de forma continua.
+  if (indice === cuadroActual && !previa) {
+    const anterior = cuadrosAnim[(cuadroActual + ANIM_FRAMES - 1) % ANIM_FRAMES];
+    lzx.globalAlpha = .22;
+    lzx.fillStyle = css.getPropertyValue('--fg');
+    for (let y = 0; y < ANIM_H; y++)
+      for (let x = 0; x < ANIM_W; x++)
+        if (anterior[y * ANIM_W + x]) lzx.fillRect(x * ESCALA, y * ESCALA, ESCALA, ESCALA);
+    lzx.globalAlpha = 1;
+  }
+
+  const c = cuadrosAnim[indice];
+  lzx.fillStyle = css.getPropertyValue('--fg');
+  for (let y = 0; y < ANIM_H; y++)
+    for (let x = 0; x < ANIM_W; x++)
+      if (c[y * ANIM_W + x]) lzx.fillRect(x * ESCALA, y * ESCALA, ESCALA, ESCALA);
+}
+
+function pintarPestanas() {
+  const t = $('tiraCuadros');
+  t.innerHTML = '';
+  for (let i = 0; i < ANIM_FRAMES; i++) {
+    const b = document.createElement('button');
+    b.className = i === cuadroActual ? 'on cuadro' : 'sec cuadro';
+    b.textContent = i + 1;
+    b.onclick = () => { pararPrevia(); cuadroActual = i; pintarPestanas(); pintarLienzo(); };
+    t.appendChild(b);
+  }
+}
+
+/* Coordenada del reloj a partir del evento, con el escalado real del elemento:
+   el canvas se estira por CSS al ancho del movil, asi que su tamaño en pantalla
+   no es el que tiene en pixeles. */
+function pixelDe(ev) {
+  const r = lz.getBoundingClientRect();
+  return {
+    x: Math.floor((ev.clientX - r.left) / r.width * ANIM_W),
+    y: Math.floor((ev.clientY - r.top) / r.height * ANIM_H),
+  };
+}
+
+function poner(x, y) {
+  if (x < 0 || x >= ANIM_W || y < 0 || y >= ANIM_H) return;
+  cuadrosAnim[cuadroActual][y * ANIM_W + x] = herramienta;
+}
+
+/*
+ * Une dos posiciones seguidas con una recta. Los eventos de puntero llegan cada
+ * varios pixeles cuando arrastras rapido, y sin esto el trazo sale a puntos.
+ */
+function trazo(a, b) {
+  let dx = Math.abs(b.x - a.x), dy = Math.abs(b.y - a.y);
+  let sx = a.x < b.x ? 1 : -1, sy = a.y < b.y ? 1 : -1;
+  let err = dx - dy, x = a.x, y = a.y;
+  for (;;) {
+    poner(x, y);
+    if (x === b.x && y === b.y) break;
+    const e2 = 2 * err;
+    if (e2 > -dy) { err -= dy; x += sx; }
+    if (e2 < dx)  { err += dx; y += sy; }
+  }
+}
+
+let ultimo = null;
+
+lz.addEventListener('pointerdown', ev => {
+  pararPrevia();
+  lz.setPointerCapture(ev.pointerId);
+  ultimo = pixelDe(ev);
+  poner(ultimo.x, ultimo.y);
+  pintarLienzo();
+});
+
+lz.addEventListener('pointermove', ev => {
+  if (!ultimo) return;
+  const p = pixelDe(ev);
+  trazo(ultimo, p);
+  ultimo = p;
+  pintarLienzo();
+});
+
+for (const fin of ['pointerup', 'pointercancel', 'pointerleave']) {
+  lz.addEventListener(fin, () => {
+    if (!ultimo) return;
+    ultimo = null;
+    guardarLocal();
+  });
+}
+
+$('pincel').onclick = () => {
+  herramienta = 1;
+  $('pincel').className = 'on'; $('goma').className = 'sec';
+};
+$('goma').onclick = () => {
+  herramienta = 0;
+  $('goma').className = 'on'; $('pincel').className = 'sec';
+};
+$('limpiar').onclick = () => {
+  pararPrevia();
+  cuadrosAnim[cuadroActual].fill(0);
+  pintarLienzo(); guardarLocal();
+};
+$('copiar').onclick = () => {
+  pararPrevia();
+  cuadrosAnim[cuadroActual].set(cuadrosAnim[(cuadroActual + ANIM_FRAMES - 1) % ANIM_FRAMES]);
+  pintarLienzo(); guardarLocal();
+};
+
+function pararPrevia() {
+  if (!previa) return;
+  clearInterval(previa);
+  previa = null;
+  $('reproducir').textContent = 'Probar';
+  pintarLienzo();
+}
+
+$('reproducir').onclick = () => {
+  if (previa) { pararPrevia(); return; }
+  let i = 0;
+  $('reproducir').textContent = 'Parar';
+  previa = setInterval(() => { pintarLienzo(i); i = (i + 1) % ANIM_FRAMES; },
+                       +$('velocidad').value * 10);
+};
+
+$('velocidad').oninput = () => {
+  $('vVel').firstElementChild.textContent = `${$('velocidad').value * 10} ms por cuadro`;
+  if (previa) { const v = $('reproducir'); pararPrevia(); v.onclick(); }
+  guardarLocal();
+};
+
+/*
+ * Al formato del panel: paginas de ocho pixeles verticales, bit 0 arriba. Es lo
+ * que espera el framebuffer del SSD1306, asi que el reloj lo copia tal cual sin
+ * convertir nada.
+ */
+function empaquetar(c) {
+  const out = new Uint8Array(ANIM_FRAME_BYTES);
+  for (let p = 0; p < ANIM_PAGES; p++)
+    for (let x = 0; x < ANIM_W; x++) {
+      let b = 0;
+      for (let bit = 0; bit < 8; bit++)
+        if (c[(p * 8 + bit) * ANIM_W + x]) b |= 1 << bit;
+      out[p * ANIM_W + x] = b;
+    }
+  return out;
+}
+
+function refrescarAnimUi() {
+  const listo = conectado() && chrAnim && !enviandoAnim && !otaEnCurso;
+  $('enviarAnim').disabled = !listo;
+  $('borrarAnim').disabled = !listo;
+}
+
+$('enviarAnim').onclick = async () => {
+  if (!chrAnim) return;
+  pararPrevia();
+  enviandoAnim = true;
+  refrescarAnimUi();
+
+  try {
+    const todo = new Uint8Array(ANIM_FRAMES * ANIM_FRAME_BYTES);
+    cuadrosAnim.forEach((c, i) => todo.set(empaquetar(c), i * ANIM_FRAME_BYTES));
+
+    const vel = +$('velocidad').value;
+    await escribirCon(chrAnim, Uint8Array.of(ANIM_START, ANIM_FRAMES, vel));
+
+    for (let off = 0; off < todo.length; off += ANIM_CHUNK) {
+      const trozo = todo.subarray(off, Math.min(off + ANIM_CHUNK, todo.length));
+      const p = new Uint8Array(3 + trozo.length);
+      p[0] = ANIM_DATA;
+      p[1] = off & 0xff;
+      p[2] = (off >> 8) & 0xff;
+      p.set(trozo, 3);
+      await escribirCon(chrAnim, p);
+    }
+
+    await escribirCon(chrAnim, Uint8Array.of(ANIM_END));
+    log('anim', `enviados ${ANIM_FRAMES} cuadros a ${vel * 10} ms`, 'ok');
+  } catch (e) {
+    log('anim', `no se pudo enviar: ${e.message}`, 'err');
+  } finally {
+    enviandoAnim = false;
+    refrescarAnimUi();
+  }
+};
+
+$('borrarAnim').onclick = async () => {
+  if (!chrAnim) return;
+  try {
+    await escribirCon(chrAnim, Uint8Array.of(ANIM_BORRAR));
+    log('anim', 'animacion quitada del reloj', 'ok');
+  } catch (e) {
+    log('anim', `no se pudo quitar: ${e.message}`, 'err');
+  }
+};
+
+cargarLocal();
+pintarPestanas();
+pintarLienzo();
+$('velocidad').oninput();
 
 // El navegador no expone writeValueWithResponse en versiones viejas.
 const escribirCon = (chr, d) =>
