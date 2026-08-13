@@ -55,7 +55,49 @@ static uint16_t s_conn = BLE_HS_CONN_HANDLE_NONE;
 static uint16_t s_ota_ctrl_handle;
 static uint32_t s_ota_ultimo_aviso;
 
+/*
+ * Diagnostico del enlace, que viaja en la caracteristica de info.
+ *
+ * Con light sleep la consola USB no sirve para esto: el reloj tiene que estar
+ * suelto y en la muñeca para reproducir la caida, y ahi no hay cable. Asi que
+ * el reloj se acuerda de por que se cayo la ultima vez y lo cuenta cuando el
+ * celular vuelve a conectarse, que es justo el momento en que se puede leer.
+ */
+static uint16_t s_caidas;
+static uint16_t s_ultima_razon;
+static uint16_t s_itvl;        /* unidades de 1.25 ms */
+static uint16_t s_latencia;
+static uint16_t s_timeout;     /* unidades de 10 ms */
+
 static void advertise(void);
+
+/* NimBLE devuelve los codigos del HCI sumados a 0x200 (BLE_HS_HCI_ERR). */
+static const char *razon_str(uint16_t razon)
+{
+    switch (razon) {
+    case 0x208: return "supervision timeout (el reloj perdio eventos de radio)";
+    case 0x213: return "lo cerro el celular";
+    case 0x216: return "lo cerro el reloj";
+    case 0x222: return "timeout de LMP/LL";
+    case 0x23d: return "fallo de MIC/cifrado";
+    case 0x23e: return "no se llego a establecer";
+    case 0x228: return "instante pasado (parametros mal negociados)";
+    default:    return "otra";
+    }
+}
+
+/* Anota los parametros que de verdad estan en vigor, que no tienen por que ser
+   los que se pidieron: el celular puede quedarse con los suyos. */
+static void anotar_params(uint16_t handle)
+{
+    struct ble_gap_conn_desc d;
+    if (ble_gap_conn_find(handle, &d) != 0) {
+        return;
+    }
+    s_itvl = d.conn_itvl;
+    s_latencia = d.conn_latency;
+    s_timeout = d.supervision_timeout;
+}
 
 static void avisar_paso(ble_sync_progress_cb_t progreso, const char *paso)
 {
@@ -192,9 +234,17 @@ static int chr_info_read(uint16_t conn, uint16_t attr, struct ble_gatt_access_ct
     const esp_app_desc_t *desc = esp_app_get_description();
     const esp_partition_t *run = esp_ota_get_running_partition();
 
-    char info[96];
-    int n = snprintf(info, sizeof(info), "%s %s mov=%lu",
-                     desc->version, run->label, (unsigned long)imu_eventos());
+    /* La pagina parte por espacios y solo usa los dos primeros campos, asi que
+       lo que se añada detras viaja sin romper nada. Holgado a proposito:
+       version[] son 32 caracteres y label[] 17. */
+    char info[192];
+    int n = snprintf(info, sizeof(info),
+                     "%s %s mov=%lu caidas=%u razon=0x%03x itvl=%u lat=%u tmo=%u",
+                     desc->version, run->label, (unsigned long)imu_eventos(),
+                     s_caidas, s_ultima_razon,
+                     (unsigned)(s_itvl * 125 / 100),   /* ms */
+                     s_latencia,
+                     (unsigned)(s_timeout * 10));      /* ms */
     if (n < 0) {
         return BLE_ATT_ERR_UNLIKELY;
     }
@@ -367,31 +417,28 @@ static int gap_event(struct ble_gap_event *event, void *arg)
          * naciendo con el valor viejo, o sea que el arreglo no llegaba nunca al
          * caso que importaba.
          */
+        anotar_params(s_conn);   /* lo que eligio el celular al conectar */
         pedir_conexion(false);
         break;
 
     case BLE_GAP_EVENT_CONN_UPDATE:
         /*
          * Lo que se pide no es lo que queda: el celular puede rechazar la
-         * peticion y quedarse con los suyos. Sin este log no hay forma de saber
-         * con que intervalo y que timeout esta corriendo el enlace de verdad,
-         * que es justo lo que hace falta para saber por que se cae.
+         * peticion y quedarse con los suyos. Sin esto no hay forma de saber con
+         * que intervalo y que timeout esta corriendo el enlace de verdad, que es
+         * justo lo que hace falta para saber por que se cae.
          */
-        {
-            struct ble_gap_conn_desc d;
-            if (ble_gap_conn_find(event->conn_update.conn_handle, &d) == 0) {
-                ESP_LOGI(TAG, "parametros: itvl %d (%d ms), latencia %d, "
-                              "timeout %d (%d ms), status %d",
-                         d.conn_itvl, d.conn_itvl * 125 / 100,
-                         d.conn_latency,
-                         d.supervision_timeout, d.supervision_timeout * 10,
-                         event->conn_update.status);
-            }
-        }
+        anotar_params(event->conn_update.conn_handle);
+        ESP_LOGI(TAG, "parametros: itvl %u (%u ms), latencia %u, timeout %u (%u ms), status %d",
+                 s_itvl, s_itvl * 125 / 100, s_latencia,
+                 s_timeout, s_timeout * 10, event->conn_update.status);
         break;
 
     case BLE_GAP_EVENT_DISCONNECT:
-        ESP_LOGI(TAG, "desconectado (razon 0x%02x)", event->disconnect.reason);
+        s_caidas++;
+        s_ultima_razon = event->disconnect.reason;
+        ESP_LOGI(TAG, "desconectado: razon 0x%03x, %s (van %u)",
+                 s_ultima_razon, razon_str(s_ultima_razon), s_caidas);
         s_connected = false;
         s_conn = BLE_HS_CONN_HANDLE_NONE;
         /* Si el enlace se cae a media actualizacion hay que soltar la ranura:

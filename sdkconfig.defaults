@@ -49,6 +49,15 @@ CONFIG_BT_CTRL_MODEM_SLEEP_MODE_1=y
 CONFIG_BT_CTRL_LPCLK_SEL_MAIN_XTAL=y
 CONFIG_BT_CTRL_MAIN_XTAL_PU_DURING_LIGHT_SLEEP=y
 
+# Con el cable puesto, nada de light sleep. El USB-Serial-JTAG se queda sin
+# alimentacion al dormir, asi que el reloj desaparece y reaparece del bus varias
+# veces por segundo y Windows ya no puede abrir el puerto: "Uno de los
+# dispositivos conectados al sistema no funciona". Sin esto no hay forma de ver
+# el log de la configuracion que de verdad corre en la muñeca.
+# Solo aplica mientras hay un host USB conectado; con el reloj suelto el ahorro
+# de energia sigue igual.
+CONFIG_USJ_NO_AUTO_LS_ON_CONNECTION=y
+
 # Stack del main task
 CONFIG_ESP_MAIN_TASK_STACK_SIZE=7168
 
