@@ -1106,8 +1106,13 @@ static void boton_largo(void)
     ESP_LOGI(TAG, "apagando la pantalla a mano");
 }
 
+/* Mismo caso que la del sensor: la interrupcion es de nivel y el boton sigue
+   abajo mientras lo tengas pulsado, asi que hay que callarla aqui dentro o la
+   tarea que tiene que atenderla no llega a correr. */
 static void IRAM_ATTR button_isr(void *arg)
 {
+    gpio_intr_disable(CONFIG_APP_BUTTON_GPIO);
+
     BaseType_t hp = pdFALSE;
     vTaskNotifyGiveFromISR(s_button_h, &hp);
     portYIELD_FROM_ISR(hp);
@@ -1143,9 +1148,8 @@ static void button_task(void *arg)
     while (1) {
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
 
-        /* Con interrupcion por nivel hay que apagarla mientras se atiende, o se
-           redispara en bucle mientras el boton siga presionado. */
-        gpio_intr_disable(CONFIG_APP_BUTTON_GPIO);
+        /* La interrupcion ya viene apagada desde la ISR; si se apagara aqui, la
+           tarea no llegaria a correr para hacerlo. */
         vTaskDelay(pdMS_TO_TICKS(30));   /* antirrebote */
 
         if (gpio_get_level(CONFIG_APP_BUTTON_GPIO) == 0) {
@@ -1192,8 +1196,24 @@ static void button_task(void *arg)
 
 static TaskHandle_t s_imu_h;
 
+/*
+ * Callar la interrupcion aqui dentro, no en la tarea, es lo unico que rompe la
+ * tormenta.
+ *
+ * La linea INT es de nivel y queda enclavada abajo hasta que alguien lee
+ * INT_STATUS por I2C. Notificar a la tarea no baja esa linea, asi que al salir
+ * de la ISR la condicion sigue puesta y el hardware vuelve a entrar de
+ * inmediato. Una ISR gana a cualquier tarea, asi que la que tenia que leer
+ * INT_STATUS no llegaba a ejecutarse nunca: el CPU se quedaba dando vueltas en
+ * la interrupcion hasta que el perro guardian reiniciaba el reloj.
+ *
+ * Desactivarla aqui la deja disparar una sola vez por armado. La tarea la vuelve
+ * a armar cuando ya ha soltado el enclavamiento.
+ */
 static void IRAM_ATTR imu_isr(void *arg)
 {
+    gpio_intr_disable(CONFIG_APP_IMU_INT_GPIO);
+
     BaseType_t hp = pdFALSE;
     vTaskNotifyGiveFromISR(s_imu_h, &hp);
     portYIELD_FROM_ISR(hp);
@@ -1239,20 +1259,12 @@ static void imu_task(void *arg)
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
 
         /*
-         * Hay que quitar las dos cosas, no solo la interrupcion.
-         *
-         * gpio_intr_disable() apaga el aviso al CPU, pero el despertador del
-         * light sleep vive en otro bit del mismo pin y sigue armado. Con la
-         * linea INT enclavada abajo —que es como esta mientras el reloj se
-         * mueve— el chip intenta dormirse, el nivel bajo lo despierta al
-         * instante, y vuelta a empezar: se queda girando en vacio sin que ni
-         * siquiera corra el manejador, porque la interrupcion si esta apagada.
-         *
-         * Es lo que hacia que subir la pausa de 200 ms a 2 s empeorara las
-         * cosas en vez de arreglarlas: alargaba diez veces la ventana en la que
-         * el chip no puede dormir ni atender el radio con holgura.
+         * La interrupcion ya viene apagada desde la ISR. Falta el despertador
+         * del light sleep, que vive en otro bit del mismo pin y no se entera.
+         * Con la linea INT enclavada abajo el chip intentaria dormirse, el
+         * nivel bajo lo despertaria al instante, y vuelta a empezar: girando en
+         * vacio toda la pausa.
          */
-        gpio_intr_disable(CONFIG_APP_IMU_INT_GPIO);
         gpio_wakeup_disable(CONFIG_APP_IMU_INT_GPIO);
 
         xSemaphoreTake(s_draw_mux, portMAX_DELAY);
