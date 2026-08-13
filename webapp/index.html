@@ -129,6 +129,43 @@
     color: var(--dim);
   }
 
+  /* --- dos pantallas que se pasan deslizando --- */
+  #pestanas { display: flex; gap: .5rem; margin-bottom: 1.2rem; }
+  #pestanas button {
+    margin: 0; padding: .5rem .2rem;
+    font-size: 11px; letter-spacing: .12em;
+    background: transparent; color: var(--dim);
+    border-color: var(--dim); box-shadow: 3px 3px 0 var(--dim);
+  }
+  #pestanas button.on {
+    background: var(--acc); color: var(--acc-fg);
+    border-color: var(--line); box-shadow: 3px 3px 0 var(--line);
+  }
+
+  /*
+   * El carrusel se sale del ancho del body para que cada pantalla ocupe el
+   * hueco entero con su propio margen, y no quede una franja muerta a los lados
+   * al deslizar.
+   */
+  #paginas {
+    display: flex;
+    overflow-x: auto;
+    scroll-snap-type: x mandatory;
+    scrollbar-width: none;
+    /* El deslizamiento vertical tiene que seguir funcionando dentro de cada
+       pantalla; sin esto el navegador se queda tambien con el vertical. */
+    touch-action: pan-x pan-y;
+  }
+  #paginas::-webkit-scrollbar { display: none; }
+  .pagina {
+    flex: 0 0 100%;
+    scroll-snap-align: start;
+    /* Sin esto, un hijo ancho (la consola, una linea larga del log) estira la
+       columna y las dos pantallas dejan de medir lo mismo. */
+    min-width: 0;
+    padding: 2px;   /* deja ver la sombra dura de los botones */
+  }
+
   /* --- editor de animacion --- */
   #lienzo {
     display: block; width: 100%; height: auto;
@@ -185,50 +222,62 @@
   </div>
 </header>
 
-<button id="primario">Conectar</button>
-<button id="instalar" class="sec" hidden>Instalar app</button>
+<nav id="pestanas">
+  <button data-p="0" class="on">Reloj</button>
+  <button data-p="1">Dibujo</button>
+</nav>
 
-<dl>
-  <div class="fila"><dt>Hora</dt><dd id="vHora">--</dd></div>
-  <div class="fila"><dt>Temp</dt><dd id="vTemp">--</dd></div>
-  <div class="fila"><dt>Humedad</dt><dd id="vHum">--</dd></div>
-  <div class="fila"><dt>Viento</dt><dd id="vViento">--</dd></div>
-  <div class="fila"><dt>Cielo</dt><dd id="vCielo">--</dd></div>
-</dl>
+<div id="paginas">
 
-<h2>FIRMWARE</h2>
-<dl>
-  <div class="fila"><dt>En el reloj</dt><dd id="vReloj">--</dd></div>
-  <div class="fila"><dt>Publicada</dt><dd id="vPublicada">--</dd></div>
-</dl>
-<div id="progreso" hidden><div id="barra"></div></div>
-<button id="remoto" disabled>Actualizar</button>
+  <section class="pagina" aria-label="Reloj">
+    <button id="primario">Conectar</button>
+    <button id="instalar" class="sec" hidden>Instalar app</button>
 
-<h2>ANIMACION</h2>
-<canvas id="lienzo" width="512" height="128"
-        aria-label="Lienzo de 128 por 32 pixeles"></canvas>
+    <dl>
+      <div class="fila"><dt>Hora</dt><dd id="vHora">--</dd></div>
+      <div class="fila"><dt>Temp</dt><dd id="vTemp">--</dd></div>
+      <div class="fila"><dt>Humedad</dt><dd id="vHum">--</dd></div>
+      <div class="fila"><dt>Viento</dt><dd id="vViento">--</dd></div>
+      <div class="fila"><dt>Cielo</dt><dd id="vCielo">--</dd></div>
+    </dl>
 
-<div class="tira" id="tiraCuadros"></div>
+    <h2>FIRMWARE</h2>
+    <dl>
+      <div class="fila"><dt>En el reloj</dt><dd id="vReloj">--</dd></div>
+      <div class="fila"><dt>Publicada</dt><dd id="vPublicada">--</dd></div>
+    </dl>
+    <div id="progreso" hidden><div id="barra"></div></div>
+    <button id="remoto" disabled>Actualizar</button>
+  </section>
 
-<div class="tira">
-  <button id="pincel" class="on">Pintar</button>
-  <button id="goma" class="sec">Borrar</button>
-  <button id="limpiar" class="sec">Vaciar</button>
-</div>
+  <section class="pagina" aria-label="Dibujo">
+    <canvas id="lienzo" width="512" height="128"
+            aria-label="Lienzo de 128 por 32 pixeles"></canvas>
 
-<div class="tira">
-  <button id="copiar" class="sec">Copiar anterior</button>
-  <button id="reproducir" class="sec">Probar</button>
-</div>
+    <div class="tira" id="tiraCuadros"></div>
 
-<input type="range" id="velocidad" min="4" max="60" value="15"
-       aria-label="Velocidad de la animacion">
-<p id="vVel" class="fila" style="border:0;padding:0;color:var(--dim);font-size:11px">
-  <span>150 ms por cuadro</span></p>
+    <div class="tira">
+      <button id="pincel" class="on">Pintar</button>
+      <button id="goma" class="sec">Borrar</button>
+      <button id="limpiar" class="sec">Vaciar</button>
+    </div>
 
-<div class="par">
-  <button id="enviarAnim" disabled>Enviar al reloj</button>
-  <button id="borrarAnim" class="sec" disabled>Quitar</button>
+    <div class="tira">
+      <button id="copiar" class="sec">Copiar anterior</button>
+      <button id="reproducir" class="sec">Probar</button>
+    </div>
+
+    <input type="range" id="velocidad" min="4" max="60" value="15"
+           aria-label="Velocidad de la animacion">
+    <p id="vVel" class="fila" style="border:0;padding:0;color:var(--dim);font-size:11px">
+      <span>150 ms por cuadro</span></p>
+
+    <div class="par">
+      <button id="enviarAnim" disabled>Enviar al reloj</button>
+      <button id="borrarAnim" class="sec" disabled>Quitar</button>
+    </div>
+  </section>
+
 </div>
 
 <h2>ESTADO DEL DISPOSITIVO</h2>
@@ -765,6 +814,37 @@ async function leerVersionReloj() {
   log('info', texto);
   refrescarOtaUi();
 }
+
+/* -------------------------------------------------- las dos pantallas --- */
+
+/*
+ * El carrusel es un contenedor con scroll horizontal y ajuste por pantalla, no
+ * un mostrar/ocultar: asi el deslizamiento del dedo lo lleva el navegador, con
+ * su inercia y su rebote, en vez de tener que reinventarlo con eventos de
+ * puntero. Las pestañas son el otro camino, y hacen falta: sobre el lienzo el
+ * dedo esta dibujando, asi que ahi no se puede deslizar para volver.
+ */
+const pager = $('paginas');
+const pestanas = [...$('pestanas').children];
+
+function marcarPestana(i) {
+  pestanas.forEach((b, j) => { b.className = j === i ? 'on' : ''; });
+}
+
+function irA(i) {
+  /* Se marca aqui y no solo al oir el scroll: el evento de scroll llega con el
+     ritmo del pintado, asi que al pulsar la pestaña tardaria en encenderse lo
+     que dure la animacion, y en una pestaña eso se lee como que no funciono. */
+  marcarPestana(i);
+  pager.scrollTo({left: pager.clientWidth * i, behavior: 'smooth'});
+}
+
+pestanas.forEach((b, i) => { b.onclick = () => irA(i); });
+
+/* Y al deslizar con el dedo, que ahi no ha pasado por irA(). */
+pager.addEventListener('scroll', () => {
+  marcarPestana(Math.round(pager.scrollLeft / pager.clientWidth));
+}, {passive: true});
 
 /* ------------------------------------------------ editor de animacion --- */
 

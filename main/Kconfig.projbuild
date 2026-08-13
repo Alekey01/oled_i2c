@@ -68,18 +68,6 @@ menu "BitCat Watch (reloj 8 bits + clima por BLE)"
             -1 acepta cualquier eje: cambia de vista con cualquier sacudida,
             venga del sentido que venga.
 
-    config APP_IMU_AGITE_INVERTIR
-        bool "Invertir el sentido del agite"
-        default n
-        depends on APP_IMU_INT_GPIO >= 0
-        help
-            Un manotazo a un lado avanza de vista y al otro retrocede, pero cual
-            es cual depende de como quede pegado el modulo.
-
-            Si te avanza cuando esperabas que retrocediera, activa esto. Tambien
-            lo puedes comprobar antes en el campo "ag=" que el reloj publica por
-            BLE: ahi sale el signo del ultimo gesto.
-
     config APP_IMU_AGITE_MG
         int "Recorrido minimo del agite, en mili-g"
         default 900
