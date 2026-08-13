@@ -114,6 +114,41 @@ bool imu_disponible(void)
     return s_listo;
 }
 
+/*
+ * Sube el sensor a pleno rendimiento un momento, y luego lo devuelve a dormir.
+ *
+ * En modo ciclo el acelerometro solo refresca 20 veces por segundo: una muestra
+ * cada 50 ms. Un manotazo dura dos o tres decimas, o sea que caben cinco o seis
+ * muestras en todo el gesto —demasiado pocas para saber hacia donde empezo—.
+ * Fuera del modo ciclo el registro se actualiza a 1 kHz y se puede leer todo lo
+ * seguido que deje el bus.
+ *
+ * Se paga con corriente: unos 500 uA en vez de decenas. Como solo dura mientras
+ * se mide el gesto y solo ocurre cuando ya te has movido, es medio segundo de
+ * cada vez y no se nota en la bateria.
+ */
+esp_err_t imu_modo_rapido(bool rapido)
+{
+    if (!s_listo) {
+        return ESP_ERR_INVALID_STATE;
+    }
+
+    if (rapido) {
+        /* Primero salir del ciclo, luego quitar el temporizador de despertar. */
+        ESP_RETURN_ON_ERROR(escribir(REG_PWR_MGMT_1, 0x08), TAG, "pwr1 rapido");
+        ESP_RETURN_ON_ERROR(escribir(REG_PWR_MGMT_2, 0x07), TAG, "pwr2 rapido");
+        /* El acelerometro tarda un par de muestras en dar valores buenos tras
+           salir del ciclo; sin esta pausa las primeras son basura, que es justo
+           donde se decide el sentido del gesto. */
+        vTaskDelay(pdMS_TO_TICKS(20));
+        return ESP_OK;
+    }
+
+    ESP_RETURN_ON_ERROR(escribir(REG_PWR_MGMT_2, 0x87), TAG, "pwr2 lento");
+    ESP_RETURN_ON_ERROR(escribir(REG_PWR_MGMT_1, 0x28), TAG, "pwr1 lento");
+    return ESP_OK;
+}
+
 void imu_descartar(void)
 {
     s_listo = false;
@@ -148,17 +183,20 @@ uint32_t imu_eventos(void)
  */
 static int s_agite_eje = -1;
 static int s_agite_swing;
+static int s_agite_sentido;
 
-void imu_anotar_agite(int eje, int swing)
+void imu_anotar_agite(int eje, int swing, int sentido)
 {
     s_agite_eje = eje;
     s_agite_swing = swing;
+    s_agite_sentido = sentido;
 }
 
-void imu_ultimo_agite(int *eje, int *swing)
+void imu_ultimo_agite(int *eje, int *swing, int *sentido)
 {
-    if (eje)   *eje = s_agite_eje;
-    if (swing) *swing = s_agite_swing;
+    if (eje)     *eje = s_agite_eje;
+    if (swing)   *swing = s_agite_swing;
+    if (sentido) *sentido = s_agite_sentido;
 }
 
 esp_err_t imu_leer(int *x_mg, int *y_mg, int *z_mg)

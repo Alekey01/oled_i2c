@@ -1214,16 +1214,74 @@ static TaskHandle_t s_imu_h;
  * En modo ciclo el sensor refresca a 20 Hz, o sea una muestra nueva cada 50 ms:
  * pedirlas mas seguidas solo devolveria la misma dos veces.
  */
-#define AGITE_MUESTRAS 12
-#define AGITE_PASO_MS  50
-#define AGITE_CRUCES   3
+#define AGITE_MUESTRAS  40
+#define AGITE_PASO_MS   10     /* un tick de FreeRTOS: 100 Hz */
+#define AGITE_CRUCES    2
+/*
+ * Cuanto hay que salirse del reposo para que cuente, como porcentaje del
+ * recorrido total, con un suelo fijo por si el gesto sale muy justo.
+ *
+ * El 20 no es arbitrario y costo un banco de pruebas descubrirlo: el frenazo de
+ * un manotazo es mas fuerte que la arrancada, porque paras en menos recorrido
+ * del que aceleras. Asi que el primer empujon —el que lleva el sentido— vale
+ * bastante menos que el recorrido total. Con el 40% se lo saltaba y se quedaba
+ * con el frenazo, o sea que devolvia el sentido cambiado siempre.
+ */
+#define AGITE_SENTIDO_PCT    20
+#define AGITE_SENTIDO_MIN_MG 150
 
-static bool detectar_agite(void)
+/*
+ * Histeresis para contar las idas y venidas. Tambien baja: la vuelta de la mano
+ * es mas suave que el frenazo, y con un margen del 25% del recorrido se perdia
+ * entera y el gesto se quedaba en un solo cruce.
+ */
+#define AGITE_HIST_PCT    15
+#define AGITE_HIST_MIN_MG 150
+
+/*
+ * Reposo del eje, tomado como la mediana de la ventana.
+ *
+ * No sirve el cero: en reposo la gravedad ya deja el eje en un valor cualquiera
+ * segun como tengas el brazo. Y tampoco sirve el promedio, que los propios
+ * picos del gesto arrastran. La mediana aguanta porque en un manotazo la mayoria
+ * de las muestras siguen estando cerca del reposo: los picos son breves.
+ */
+static int mediana(const int16_t *v, int n)
 {
+    int16_t orden[AGITE_MUESTRAS];
+    memcpy(orden, v, n * sizeof(orden[0]));
+    for (int i = 1; i < n; i++) {
+        int16_t x = orden[i];
+        int j = i - 1;
+        while (j >= 0 && orden[j] > x) {
+            orden[j + 1] = orden[j];
+            j--;
+        }
+        orden[j + 1] = x;
+    }
+    return orden[n / 2];
+}
+
+/*
+ * Devuelve +1 o -1 con el sentido del gesto, o 0 si no hubo gesto.
+ *
+ * El sentido sale del PRIMER empujon, no del mas grande. Al lanzar la mano a la
+ * derecha el sensor mide tres cosas seguidas: la arrancada hacia la derecha, el
+ * frenazo —que apunta a la izquierda y suele ser mas fuerte, porque paras en
+ * menos recorrido del que aceleras— y la vuelta. Quedarse con el pico mayor
+ * daria el sentido cambiado la mitad de las veces; el orden en el tiempo es lo
+ * que de verdad codifica hacia donde tiraste.
+ */
+static int detectar_agite(void)
+{
+    int16_t muestras[3][AGITE_MUESTRAS];
     int min[3] = {INT32_MAX, INT32_MAX, INT32_MAX};
     int max[3] = {INT32_MIN, INT32_MIN, INT32_MIN};
-    int muestras[3][AGITE_MUESTRAS];
     int n = 0;
+
+    /* Sin esto solo habria una muestra cada 50 ms y el gesto entero cabria en
+       cinco: imposible separar la arrancada del frenazo. */
+    imu_modo_rapido(true);
 
     for (int i = 0; i < AGITE_MUESTRAS; i++) {
         int v[3];
@@ -1233,7 +1291,7 @@ static bool detectar_agite(void)
 
         if (err == ESP_OK) {
             for (int e = 0; e < 3; e++) {
-                muestras[e][n] = v[e];
+                muestras[e][n] = (int16_t)v[e];
                 if (v[e] < min[e]) min[e] = v[e];
                 if (v[e] > max[e]) max[e] = v[e];
             }
@@ -1242,8 +1300,10 @@ static bool detectar_agite(void)
         vTaskDelay(pdMS_TO_TICKS(AGITE_PASO_MS));
     }
 
-    if (n < AGITE_CRUCES + 1) {
-        return false;   /* el bus fallo demasiadas veces para decidir nada */
+    imu_modo_rapido(false);
+
+    if (n < 8) {
+        return 0;   /* el bus fallo demasiadas veces para decidir nada */
     }
 
     /* Eje que mas se movio. */
@@ -1254,44 +1314,83 @@ static bool detectar_agite(void)
         }
     }
     int swing = max[eje] - min[eje];
+    const int16_t *m = muestras[eje];
+    int reposo = mediana(m, n);
 
-    /* Se anota siempre, incluso si no llega a contar como gesto: es lo que deja
-       ver por BLE que eje mueve el reloj de verdad y con cuanta fuerza. */
-    imu_anotar_agite(eje, swing);
-
-    if (swing < CONFIG_APP_IMU_AGITE_MG) {
-        return false;
+    /* Primera muestra que se sale de verdad del reposo: su signo es el gesto. */
+    int sentido = 0;
+    int disparo = swing * AGITE_SENTIDO_PCT / 100;
+    if (disparo < AGITE_SENTIDO_MIN_MG) {
+        disparo = AGITE_SENTIDO_MIN_MG;
     }
-#if CONFIG_APP_IMU_EJE_AGITE >= 0
-    if (eje != CONFIG_APP_IMU_EJE_AGITE) {
-        return false;   /* se movio, pero no en el sentido que cuenta */
-    }
-#endif
-
-    /* Idas y venidas: cuantas veces cruza el punto medio de su propio recorrido. */
-    int centro = (max[eje] + min[eje]) / 2;
-    int cruces = 0;
-    bool arriba = muestras[eje][0] > centro;
-    for (int i = 1; i < n; i++) {
-        bool ahora = muestras[eje][i] > centro;
-        if (ahora != arriba) {
-            cruces++;
-            arriba = ahora;
+    for (int i = 0; i < n; i++) {
+        int d = m[i] - reposo;
+        if (d > disparo || d < -disparo) {
+            sentido = d > 0 ? 1 : -1;
+            break;
         }
     }
 
-    return cruces >= AGITE_CRUCES;
+    /* Se anota siempre, aunque no llegue a contar como gesto: es lo que deja ver
+       por BLE que eje mueve el reloj, con cuanta fuerza y hacia donde. */
+    imu_anotar_agite(eje, swing, sentido);
+
+    if (swing < CONFIG_APP_IMU_AGITE_MG || sentido == 0) {
+        return 0;
+    }
+#if CONFIG_APP_IMU_EJE_AGITE >= 0
+    if (eje != CONFIG_APP_IMU_EJE_AGITE) {
+        return 0;   /* se movio, pero no en el eje que cuenta */
+    }
+#endif
+
+    /*
+     * Idas y venidas. Un manotazo va y vuelve, asi que cruza el reposo varias
+     * veces; empujar el brazo en una direccion y dejarlo ahi lo cruza una sola.
+     * Es lo que separa el gesto de moverse normal, y sin ello cambiaria de vista
+     * cada vez que levantas la muñeca para mirar la hora.
+     *
+     * Con margen a los dos lados: contar cruces sobre la raya pelada convertiria
+     * el ruido de estar quieto en un gesto.
+     */
+    int margen = swing * AGITE_HIST_PCT / 100;
+    if (margen < AGITE_HIST_MIN_MG) {
+        margen = AGITE_HIST_MIN_MG;
+    }
+    int cruces = 0;
+    int lado = 0;
+    for (int i = 0; i < n; i++) {
+        int d = m[i] - reposo;
+        int nuevo = d > margen ? 1 : (d < -margen ? -1 : 0);
+        if (nuevo != 0 && lado != 0 && nuevo != lado) {
+            cruces++;
+        }
+        if (nuevo != 0) {
+            lado = nuevo;
+        }
+    }
+
+    return cruces >= AGITE_CRUCES ? sentido : 0;
 }
 
-/* Agitando no se salta en el juego: ahi el salto es del boton, y un tropiezo
-   no deberia costarte la partida. */
-static void agite_cambiar_vista(void)
+/*
+ * Un manotazo a un lado avanza y al otro retrocede. Cual es cual depende de como
+ * quedo pegado el modulo, asi que se puede dar la vuelta desde menuconfig.
+ *
+ * En el juego no hace nada: ahi el salto es del boton, y un tropiezo no deberia
+ * costarte la partida.
+ */
+static void agite_cambiar_vista(int sentido)
 {
     if (s_view == VIEW_GAME) {
         return;
     }
-    s_view = (s_view + 1) % VIEW_COUNT;
-    ESP_LOGI(TAG, "agite: vista %d", s_view);
+#if CONFIG_APP_IMU_AGITE_INVERTIR
+    sentido = -sentido;
+#endif
+    s_view = sentido > 0 ? (s_view + 1) % VIEW_COUNT
+                         : (s_view + VIEW_COUNT - 1) % VIEW_COUNT;
+    ESP_LOGI(TAG, "agite %s: vista %d", sentido > 0 ? "adelante" : "atras", s_view);
 }
 
 /*
@@ -1377,9 +1476,10 @@ static void imu_task(void *arg)
             s_last_activity_us = esp_timer_get_time();
             xTaskNotifyGive(s_display_h);
 
-            agitado = detectar_agite();
+            int sentido = detectar_agite();
+            agitado = (sentido != 0);
             if (agitado) {
-                agite_cambiar_vista();
+                agite_cambiar_vista(sentido);
                 s_last_activity_us = esp_timer_get_time();
                 xTaskNotifyGive(s_display_h);
             }
@@ -1596,7 +1696,10 @@ void app_main(void)
 
 #if CONFIG_APP_IMU_INT_GPIO >= 0
     if (imu_disponible()) {
-        xTaskCreate(imu_task, "imu", 3072, NULL, 5, &s_imu_h);
+        /* 4096 y no 3072: la ventana del gesto guarda 40 muestras de los tres
+           ejes mas la copia que ordena la mediana, y eso es medio kilo de pila
+           que antes no hacia falta. */
+        xTaskCreate(imu_task, "imu", 4096, NULL, 5, &s_imu_h);
     }
 #endif
 

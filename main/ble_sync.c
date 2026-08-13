@@ -298,16 +298,18 @@ static int chr_info_read(uint16_t conn, uint16_t attr, struct ble_gatt_access_ct
     /* La pagina parte por espacios y solo usa los dos primeros campos, asi que
        lo que se añada detras viaja sin romper nada. Holgado a proposito:
        version[] son 32 caracteres y label[] 17. */
-    /* Eje de la ultima sacudida, en letra: es lo que hay que poner en
-       APP_IMU_EJE_AGITE si agitando de lado no cambia de vista. */
-    int eje = -1, swing = 0;
-    imu_ultimo_agite(&eje, &swing);
+    /* Ultimo gesto: eje, sentido y fuerza. El eje va a APP_IMU_EJE_AGITE si
+       agitando de lado no cambia de vista; el signo dice si hay que activar
+       APP_IMU_AGITE_INVERTIR. */
+    int eje = -1, swing = 0, sentido = 0;
+    imu_ultimo_agite(&eje, &swing, &sentido);
     const char *eje_txt = (eje == 0) ? "X" : (eje == 1) ? "Y" : (eje == 2) ? "Z" : "-";
+    const char *signo = (sentido > 0) ? "+" : (sentido < 0) ? "-" : "?";
 
     char info[192];
     int n = snprintf(info, sizeof(info),
                      "%s %s mov=%lu caidas=%u razon=0x%03x itvl=%u lat=%u tmo=%u "
-                     "reset=%s up=%lu ag=%s:%d",
+                     "reset=%s up=%lu ag=%s%s:%d",
                      desc->version, run->label, (unsigned long)imu_eventos(),
                      s_caidas, s_ultima_razon,
                      (unsigned)(s_itvl * 125 / 100),   /* ms */
@@ -317,7 +319,7 @@ static int chr_info_read(uint16_t conn, uint16_t attr, struct ble_gatt_access_ct
                      /* Segundos desde el arranque. Si al reconectar vale menos
                         que el hueco que hubo sin enlace, es que se reinicio. */
                      (unsigned long)(esp_timer_get_time() / 1000000),
-                     eje_txt, swing);
+                     eje_txt, signo, swing);
     if (n < 0) {
         return BLE_ATT_ERR_UNLIKELY;
     }

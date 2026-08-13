@@ -43,12 +43,20 @@ uint32_t imu_eventos(void);
 esp_err_t imu_leer(int *x_mg, int *y_mg, int *z_mg);
 
 /*
- * Ultima sacudida medida: que eje se movio mas (0=X, 1=Y, 2=Z) y cuanto recorrio
- * en mili-g. Lo mide quien tiene el bus, y se publica por BLE para poder elegir
- * el eje del gesto sin abrir el reloj ni conectarlo por cable.
+ * Saca al sensor del modo ciclo mientras se mide un gesto, y lo devuelve luego.
  *
- * eje = -1 mientras no se haya medido ninguna. Cualquiera de los dos punteros
- * puede ser NULL.
+ * En modo ciclo refresca a 20 Hz, que no da muestras suficientes dentro de un
+ * manotazo para saber hacia donde empezo. Despierto refresca a 1 kHz.
  */
-void imu_anotar_agite(int eje, int swing);
-void imu_ultimo_agite(int *eje, int *swing);
+esp_err_t imu_modo_rapido(bool rapido);
+
+/*
+ * Ultimo gesto medido: que eje se movio mas (0=X, 1=Y, 2=Z), cuanto recorrio en
+ * mili-g, y hacia donde empezo (+1, -1, o 0 si no se pudo decidir). Lo mide
+ * quien tiene el bus, y se publica por BLE para poder elegir el eje y el sentido
+ * sin abrir el reloj ni conectarlo por cable.
+ *
+ * eje = -1 mientras no se haya medido ninguno. Los punteros pueden ser NULL.
+ */
+void imu_anotar_agite(int eje, int swing, int sentido);
+void imu_ultimo_agite(int *eje, int *swing, int *sentido);
