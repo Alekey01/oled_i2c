@@ -189,19 +189,50 @@
   .par { display: flex; gap: .5rem; }
   .par button { margin-bottom: .85rem; }
 
-  /* --- consola --- */
+  /* --- actividad y detalles tecnicos --- */
   h2 {
     margin: 1.9rem 0 .55rem;
     font-size: 11px; font-weight: 700;
     letter-spacing: .2em; color: var(--dim);
   }
-  #consola {
-    height: 11rem; overflow-y: auto;
+
+  /* Lo que le pasa al usuario: en su idioma, sin hora ni etiquetas. Crece con
+     lo que haya, en vez de reservar una caja fija que casi siempre sale vacia. */
+  #actividad {
+    max-height: 9rem; overflow-y: auto;
     padding: .65rem .75rem;
-    border: 2px solid var(--line); border-radius: 0;
+    border: 2px solid var(--line);
     background: var(--panel);
-    font-size: 11.5px; line-height: 1.8;
+    font-size: 12px; line-height: 1.75;
   }
+  .ev { display: flex; gap: .55rem; }
+  .ev::before { content: '·'; flex: none; color: var(--dim); }
+  .ev.ok::before  { content: '✓'; color: var(--ok); }
+  .ev.err::before { content: '!'; color: var(--err); font-weight: 700; }
+  .ev.err { color: var(--err); }
+  .ev span { word-break: break-word; }
+
+  /* El diagnostico vive plegado: solo se abre cuando algo va mal. */
+  details {
+    margin-top: .9rem;
+    border: 2px dotted var(--line);
+    background: transparent;
+  }
+  summary {
+    padding: .55rem .75rem;
+    font-size: 10.5px; font-weight: 700;
+    letter-spacing: .16em; text-transform: uppercase;
+    color: var(--dim); cursor: pointer;
+  }
+  summary::marker { color: var(--dim); }
+  #nErrores { color: var(--err); }
+  #tecnico {
+    height: 10rem; overflow-y: auto;
+    padding: .5rem .75rem;
+    border-top: 2px dotted var(--line);
+    font-size: 11px; line-height: 1.75;
+  }
+  #copiarSoporte { margin: .6rem .75rem .75rem; width: calc(100% - 1.5rem); }
   .ln { display: flex; gap: .55rem; }
   .ln .h { flex: none; color: var(--dim); }
   .ln .g { flex: none; width: 6ch; color: var(--dim); text-transform: uppercase; }
@@ -280,8 +311,15 @@
 
 </div>
 
-<h2>ESTADO DEL DISPOSITIVO</h2>
-<div id="consola" role="log" aria-live="polite"></div>
+<h2>ACTIVIDAD</h2>
+<div id="actividad" role="log" aria-live="polite"></div>
+
+<details id="soporte">
+  <summary>Detalles tecnicos <span id="nErrores"></span></summary>
+  <div id="tecnico"></div>
+  <button id="copiarSoporte" class="sec">Copiar para soporte</button>
+</details>
+
 <p id="pie">BitCat Watch</p>
 
 <script>
@@ -468,26 +506,90 @@ setInterval(() => { if (animado) { tick++; pintarGato(); } }, 260);
 
 // Se construye con nodos y textContent, nunca innerHTML: los mensajes traen
 // texto de excepciones del navegador y no hay que interpretarlo como markup.
+/*
+ * Dos registros con propositos distintos.
+ *
+ * log() es el diario tecnico: lo apunta todo, con hora y etiqueta, y vive
+ * plegado dentro de "Detalles tecnicos". Ahi caben los epoch, los porcentajes
+ * del OTA y la cadena de diagnostico del reloj, que no le dicen nada a quien
+ * solo quiere ver la hora en la muñeca pero lo son todo cuando algo falla.
+ *
+ * aviso() es lo que le pasa al usuario, en su idioma y sin jerga. Se llama
+ * pocas veces a proposito: si se anotara cada sincronizacion —una por minuto—
+ * lo unico que de verdad importa quedaria enterrado.
+ *
+ * Los errores no hay que acordarse de duplicarlos: log() los sube solo a la
+ * lista visible, porque un fallo que solo aparezca dentro de un desplegable
+ * cerrado es un fallo que nadie ve.
+ */
+const historial = [];
+let nErrores = 0;
+
 function log(grupo, mensaje, clase = '') {
+  const hora = new Date().toTimeString().slice(0, 8);
+  historial.push(`${hora} ${grupo.padEnd(6)} ${mensaje}`);
+
   const ln = document.createElement('div');
   ln.className = 'ln ' + clase;
 
   const h = document.createElement('span');
   h.className = 'h';
-  h.textContent = new Date().toTimeString().slice(0, 8);
+  h.textContent = hora;
 
   const g = document.createElement('span');
   g.className = 'g';
   g.textContent = grupo;
 
+  // textContent y no innerHTML: aqui acaba texto de excepciones del navegador
+  // y de nombres de dispositivo, que no hay que interpretar como markup.
   const m = document.createElement('span');
   m.className = 'm';
   m.textContent = mensaje;
 
   ln.append(h, g, m);
-  $('consola').append(ln);
-  $('consola').scrollTop = $('consola').scrollHeight;
+  $('tecnico').append(ln);
+  $('tecnico').scrollTop = $('tecnico').scrollHeight;
+
+  if (clase === 'err') {
+    nErrores++;
+    $('nErrores').textContent = `· ${nErrores} ${nErrores === 1 ? 'error' : 'errores'}`;
+    aviso(mensaje, 'err', false);
+  }
 }
+
+function aviso(texto, clase = '', tambienTecnico = true) {
+  if (tambienTecnico) log('sys', texto, clase);
+
+  const ev = document.createElement('div');
+  ev.className = 'ev ' + clase;
+  const s = document.createElement('span');
+  s.textContent = texto;
+  ev.append(s);
+  $('actividad').append(ev);
+  $('actividad').scrollTop = $('actividad').scrollHeight;
+}
+
+/* Todo el diario mas el contexto que siempre se acaba preguntando: que version
+   corre en el reloj, cual en la pagina, y en que navegador. */
+$('copiarSoporte').onclick = async () => {
+  const cabecera = [
+    `pagina ${$('pie').textContent}`,
+    `reloj ${versionReloj ? versionReloj.version + ' ' + versionReloj.ranura : 'sin conectar'}`,
+    navigator.userAgent,
+    '',
+  ];
+  const texto = cabecera.concat(historial).join('\n');
+  try {
+    await navigator.clipboard.writeText(texto);
+    $('copiarSoporte').textContent = 'Copiado';
+    setTimeout(() => { $('copiarSoporte').textContent = 'Copiar para soporte'; }, 2000);
+  } catch (e) {
+    // Sin permiso de portapapeles queda seleccionarlo a mano, que es mejor que
+    // no poder sacarlo de aqui de ninguna forma.
+    $('copiarSoporte').textContent = 'No se pudo copiar';
+    setTimeout(() => { $('copiarSoporte').textContent = 'Copiar para soporte'; }, 2000);
+  }
+};
 
 /* -------------------------------------------------------------- estado */
 
@@ -575,7 +677,7 @@ async function abrirGatt(etiqueta) {
   } catch (e) {
     chrOtaCtrl = chrOtaData = chrInfo = null;
     versionReloj = null;
-    log('ota', 'este firmware no acepta actualizacion por bluetooth');
+    aviso('Este reloj tiene firmware antiguo: no se puede actualizar por bluetooth');
   }
 
   // En su propio try: la animacion llego despues del OTA, asi que un reloj
@@ -584,13 +686,14 @@ async function abrirGatt(etiqueta) {
     chrAnim = await service.getCharacteristic(CHR_ANIM);
   } catch (e) {
     chrAnim = null;
-    log('anim', 'este firmware no acepta animaciones');
+    aviso('Este reloj tiene firmware antiguo: no acepta animaciones');
   }
   refrescarAnimUi();
 
   esperaReconexion = RECONEXION_MIN_MS;
   setEstado('Conectado', 'on');
   log('gatt', `${etiqueta} a ${device.name}`, 'ok');
+  aviso(`Reloj ${etiqueta}`, 'ok', false);
   arrancarTimers();
   await syncAll();
 }
@@ -636,6 +739,7 @@ function alDesconectar() {
   if (desconexionManual) {
     setEstado('Desconectado', '');
     log('gatt', 'desconectado por el usuario');
+    aviso('Reloj desconectado', '', false);
     return;
   }
   log('gatt', 'enlace perdido', 'err');
@@ -645,7 +749,7 @@ function alDesconectar() {
 
 async function conectar() {
   if (!navigator.bluetooth) {
-    log('err', 'este navegador no soporta web bluetooth, usa chrome en android', 'err');
+    log('err', 'Este navegador no soporta bluetooth. Usa Chrome en Android.', 'err');
     setEstado('No disponible', '');
     return;
   }
@@ -1069,6 +1173,7 @@ $('enviarAnim').onclick = async () => {
 
     await escribirCon(chrAnim, Uint8Array.of(ANIM_END));
     log('anim', `enviados ${ANIM_FRAMES} cuadros a ${vel * 10} ms`, 'ok');
+    aviso('Animacion enviada al reloj', 'ok', false);
   } catch (e) {
     log('anim', `no se pudo enviar: ${e.message}`, 'err');
   } finally {
@@ -1081,7 +1186,7 @@ $('borrarAnim').onclick = async () => {
   if (!chrAnim) return;
   try {
     await escribirCon(chrAnim, Uint8Array.of(ANIM_BORRAR));
-    log('anim', 'animacion quitada del reloj', 'ok');
+    aviso('Animacion quitada del reloj', 'ok');
   } catch (e) {
     log('anim', `no se pudo quitar: ${e.message}`, 'err');
   }
@@ -1169,6 +1274,7 @@ async function enviarFirmware(datos, nombre) {
   $('progreso').hidden = false;
   pintarBarra(0, 1);
   log('ota', `${nombre}, ${Math.round(datos.length / 1024)} KB`);
+  aviso('Actualizando el reloj, no lo desconectes', '', false);
 
   await chrOtaCtrl.startNotifications();
   chrOtaCtrl.addEventListener('characteristicvaluechanged', onOtaNotify);
@@ -1246,6 +1352,7 @@ async function enviarFirmware(datos, nombre) {
 
     pintarBarra(1, 1);
     log('ota', 'firmware aceptado, el reloj se reinicia', 'ok');
+    aviso('Firmware instalado. El reloj se esta reiniciando.', 'ok', false);
   } catch (e) {
     // Cancelar libera la ranura. Si el enlace ya murio da igual que falle.
     try { await escribirCon(chrOtaCtrl, new Uint8Array([OTA_ABORT])); } catch (_) {}
@@ -1340,7 +1447,7 @@ if ('serviceWorker' in navigator) {
   window.addEventListener('load', async () => {
     try {
       const reg = await navigator.serviceWorker.register('./sw.js');
-      log('sys', 'modo offline listo');
+      aviso('Listo para usar sin conexion', 'ok');
 
       // Un service worker nuevo se queda en espera hasta que se cierran las
       // pestañas viejas; aqui se le pide el relevo y se recarga una sola vez.
@@ -1373,7 +1480,7 @@ window.addEventListener('beforeinstallprompt', ev => {
   ev.preventDefault();
   promptInstalar = ev;
   $('instalar').hidden = false;
-  log('sys', 'la app se puede instalar en la pantalla de inicio');
+  aviso('Se puede instalar en la pantalla de inicio');
 });
 
 $('instalar').onclick = async () => {
@@ -1388,18 +1495,18 @@ $('instalar').onclick = async () => {
 
 window.addEventListener('appinstalled', () => {
   $('instalar').hidden = true;
-  log('sys', 'app instalada', 'ok');
+  aviso('App instalada', 'ok');
 });
 
 // Sin red el clima falla, pero la hora no: conviene que se vea la diferencia.
-addEventListener('offline', () => log('sys', 'sin red, el clima no se podra consultar'));
-addEventListener('online',  () => log('sys', 'red restablecida', 'ok'));
+addEventListener('offline', () => aviso('Sin internet: el clima no se podra actualizar'));
+addEventListener('online',  () => aviso('Internet restablecido', 'ok'));
 
 pintarGato();
 buscarFirmwarePublicado();
 mostrarVersionApp();
-log('sys', 'listo, esperando conexion');
-if (!navigator.onLine) log('sys', 'sin red, el clima no se podra consultar');
+aviso('Listo. Pulsa Conectar para poner el reloj en hora.');
+if (!navigator.onLine) aviso('Sin internet: el clima no se podra actualizar');
 </script>
 </body>
 </html>
