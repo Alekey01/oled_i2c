@@ -456,14 +456,15 @@ static int chr_write(uint16_t conn, uint16_t attr, struct ble_gatt_access_ctxt *
 
     if (ble_uuid_cmp(ctxt->chr->uuid, &chr_fc.u) == 0) {
         if (len < 2 || buf[0] == 0 || buf[0] > BLE_SYNC_FC_MAX ||
-            len != (uint16_t)(2 + 2 * buf[0])) {
+            len != (uint16_t)(2 + 3 * buf[0])) {
             ESP_LOGW(TAG, "pronostico: %d bytes no cuadran con %d horas", len, buf[0]);
             return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
         }
         forecast_t f = {.horas = buf[0], .hora0 = buf[1]};
         for (int i = 0; i < f.horas; i++) {
-            f.temp[i] = (int8_t)buf[2 + i * 2];
-            f.prob[i] = buf[3 + i * 2];
+            f.temp[i] = (int8_t)buf[2 + i * 3];
+            f.prob[i] = buf[3 + i * 3];
+            f.wmo[i]  = buf[4 + i * 3];
         }
         ESP_LOGI(TAG, "pronostico: %u horas desde las %u:00", f.horas, f.hora0);
         if (s_cb.on_forecast) {

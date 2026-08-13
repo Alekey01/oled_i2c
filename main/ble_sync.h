@@ -11,7 +11,7 @@
  *   Servicio  5c8b0001-7a2e-4f1d-9c3a-1b2d4e6f8a90
  *     char    5c8b0002-...  WRITE  8 bytes     hora
  *     char    5c8b0003-...  WRITE  4 o 6 bytes clima
- *     char    5c8b0008-...  WRITE  2+2n bytes  pronostico
+ *     char    5c8b0008-...  WRITE  2+3n bytes  pronostico
  *
  * Hora (little-endian):  uint32 epoch_utc | int32 offset_utc_segundos
  * Clima (little-endian): int16 temp_x10 | uint8 humedad_% | uint8 codigo_wmo
@@ -19,24 +19,26 @@
  * Los dos ultimos bytes son opcionales: sin ellos no se muestra el viento.
  *
  * Pronostico: uint8 n_horas | uint8 hora_local_de_la_primera | n x (int8
- * temperatura_C, uint8 probabilidad_lluvia_%). Grados enteros y no decimas:
- * en una pantalla de 32 px de alto la decima no se distingue, y asi el
- * pronostico entero cabe en una sola escritura.
+ * temperatura_C, uint8 probabilidad_lluvia_%, uint8 codigo_wmo). Grados
+ * enteros y no decimas: en una pantalla de 32 px de alto la decima no se
+ * distingue, y asi el pronostico entero cabe en una sola escritura.
  */
 
 #define BLE_SYNC_TIME_LEN         8
 #define BLE_SYNC_WEATHER_LEN      4
 #define BLE_SYNC_WEATHER_LEN_WIND 6
 
-/* Doce horas: es lo que cabe legible en 128 px y lo que abarca "el resto del
-   dia", que es la pregunta que de verdad se le hace a un pronostico. */
-#define BLE_SYNC_FC_MAX 12
+/* Seis horas: cada una ocupa una columna con su hora, su icono y su
+   temperatura, y en 128 px salen a 21 px por columna. Con mas, el icono se
+   queda sin sitio para leerse. */
+#define BLE_SYNC_FC_MAX 6
 
 typedef struct {
     uint8_t horas;                        /* cuantas entradas valen */
     uint8_t hora0;                        /* hora local (0..23) de la primera */
     int8_t  temp[BLE_SYNC_FC_MAX];        /* grados enteros */
     uint8_t prob[BLE_SYNC_FC_MAX];        /* probabilidad de lluvia, 0..100 */
+    uint8_t wmo[BLE_SYNC_FC_MAX];         /* codigo de cielo, para el icono */
 } forecast_t;
 
 typedef struct {

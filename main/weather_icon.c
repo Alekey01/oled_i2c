@@ -164,6 +164,194 @@ void weather_draw_icon(ssd1306_t *d, int x, int y, int wmo_code, bool night)
     }
 }
 
+/* --------------------------------------------------- iconos de 13x13 px */
+
+/*
+ * Version chica, para el pronostico por horas. No se puede escalar la grande:
+ * son 30x30 y en 128 px no caben seis. A este tamaño tampoco vale reducir los
+ * mismos trazos, porque el sol pierde los rayos y la nube se convierte en una
+ * mancha; hay que redibujarlos pensados para trece pixeles.
+ */
+#define MINI_LADO 13
+
+static const char *const IC_SOL[MINI_LADO] = {
+    ".............",
+    "......#......",
+    "..#.......#..",
+    "....#####....",
+    "...#######...",
+    "...#######...",
+    "#..#######..#",
+    "...#######...",
+    "...#######...",
+    "....#####....",
+    "..#.......#..",
+    "......#......",
+    ".............",
+};
+
+static const char *const IC_LUNA[MINI_LADO] = {
+    ".............",
+    "...#####.....",
+    "..###..##....",
+    ".####...#....",
+    ".#####.......",
+    "######.......",
+    "######.......",
+    "######.......",
+    ".#####.......",
+    ".####...#....",
+    "..###..##....",
+    "...#####.....",
+    ".............",
+};
+
+/* Sol chico con sus rayos asomando por encima de la nube: a este tamaño es lo
+   unico que distingue "parcialmente nublado" de "nublado". */
+static const char *const IC_PARCIAL[MINI_LADO] = {
+    ".............",
+    ".......#...#.",
+    "........###..",
+    "......#.###.#",
+    "........###..",
+    ".......#...#.",
+    "....#####....",
+    "..##.....##..",
+    ".##.......##.",
+    "#...........#",
+    "#############",
+    ".............",
+    ".............",
+};
+
+static const char *const IC_NUBE[MINI_LADO] = {
+    ".............",
+    ".............",
+    ".............",
+    "....#####....",
+    "..##.....##..",
+    ".##.......##.",
+    "#...........#",
+    "#...........#",
+    "#############",
+    ".............",
+    ".............",
+    ".............",
+    ".............",
+};
+
+static const char *const IC_NIEBLA[MINI_LADO] = {
+    ".............",
+    "....#####....",
+    "..##.....##..",
+    ".##.......##.",
+    "#...........#",
+    "#############",
+    ".............",
+    ".###.###.###.",
+    ".............",
+    "###.###.###..",
+    ".............",
+    ".###.###.###.",
+    ".............",
+};
+
+static const char *const IC_LLUVIA[MINI_LADO] = {
+    ".............",
+    "....#####....",
+    "..##.....##..",
+    ".##.......##.",
+    "#...........#",
+    "#############",
+    ".............",
+    "..#...#...#..",
+    ".#...#...#...",
+    ".............",
+    "..#...#...#..",
+    ".#...#...#...",
+    ".............",
+};
+
+static const char *const IC_NIEVE[MINI_LADO] = {
+    ".............",
+    "....#####....",
+    "..##.....##..",
+    ".##.......##.",
+    "#...........#",
+    "#############",
+    ".............",
+    "..#.#...#.#..",
+    "...#.....#...",
+    "..#.#...#.#..",
+    ".............",
+    ".....#.#.....",
+    "......#......",
+};
+
+static const char *const IC_TORMENTA[MINI_LADO] = {
+    ".............",
+    "....#####....",
+    "..##.....##..",
+    ".##.......##.",
+    "#...........#",
+    "#############",
+    "......###....",
+    ".....###.....",
+    "....###......",
+    "...#######...",
+    ".....###.....",
+    "....###......",
+    "...##........",
+};
+
+static void estampar_mini(ssd1306_t *d, int x, int y, const char *const *filas)
+{
+    for (int r = 0; r < MINI_LADO; r++) {
+        for (int c = 0; c < MINI_LADO; c++) {
+            if (filas[r][c] == '#') {
+                ssd1306_pixel(d, x + c, y + r, true);
+            }
+        }
+    }
+}
+
+void weather_draw_icon_mini(ssd1306_t *d, int x, int y, int wmo_code, bool night)
+{
+    const char *const *ic;
+
+    switch (wmo_code) {
+    case 0:
+        ic = night ? IC_LUNA : IC_SOL;
+        break;
+    case 1: case 2:
+        ic = IC_PARCIAL;
+        break;
+    case 3:
+        ic = IC_NUBE;
+        break;
+    case 45: case 48:
+        ic = IC_NIEBLA;
+        break;
+    case 71: case 73: case 75: case 77: case 85: case 86:
+        ic = IC_NIEVE;
+        break;
+    case 95: case 96: case 99:
+        ic = IC_TORMENTA;
+        break;
+    case 51: case 53: case 55: case 56: case 57:
+    case 61: case 63: case 65: case 66: case 67:
+    case 80: case 81: case 82:
+        ic = IC_LLUVIA;
+        break;
+    default:
+        /* Codigo que no conocemos: mejor una nube que un hueco, que en una fila
+           de seis columnas se leeria como que falta el dato. */
+        ic = IC_NUBE;
+        break;
+    }
+    estampar_mini(d, x, y, ic);
+}
+
 /* Rosa de los vientos de 16 puntos, en abreviaturas en espanol. */
 const char *weather_wind_dir(int degrees)
 {

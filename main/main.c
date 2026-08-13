@@ -319,113 +319,6 @@ static void draw_weather(const weather_t *w, const struct tm *t, bool have_time)
 }
 
 /*
- * Vista 3: pronostico de las proximas horas.
- *
- * Linea para la temperatura y barras para la lluvia, y no barras para las dos
- * cosas: son magnitudes distintas y con la misma forma habria que mirarlas dos
- * veces para saber cual es cual. La linea ademas deja ver la tendencia —si
- * refresca por la tarde— que es lo que se le pregunta a un pronostico, mientras
- * que de la lluvia solo importa cuanta hay y a que hora.
- */
-#define FC_X0    6
-#define FC_PASO  10                  /* 12 horas x 10 px = 120, centrado en 128 */
-#define FC_Y_TOP 10                  /* techo de la linea de temperatura */
-#define FC_Y_BOT 23                  /* suelo de la linea */
-/* Dos pixeles de aire entre la linea y las barras: sin ellos, un minimo de
-   temperatura que caiga sobre una hora de lluvia se pega a su barra y las dos
-   cosas se leen como una sola mancha. */
-#define FC_LLUVIA_Y 31               /* base de las barras de lluvia */
-#define FC_LLUVIA_H 6                /* 100 % = 6 px */
-
-static void draw_forecast(const forecast_t *f, bool have_time)
-{
-    char buf[32];
-
-    if (f->horas < 2) {
-        text_center(4, "PRONOSTICO", 1);
-        text_center(18, have_time ? "SINCRONIZA" : "SIN HORA AUN", 1);
-        return;
-    }
-
-    int min = 127, max = -128, lluvia_max = 0, hora_lluvia = -1;
-    for (int i = 0; i < f->horas; i++) {
-        if (f->temp[i] < min) min = f->temp[i];
-        if (f->temp[i] > max) max = f->temp[i];
-        if (f->prob[i] > lluvia_max) {
-            lluvia_max = f->prob[i];
-            hora_lluvia = (f->hora0 + i) % 24;
-        }
-    }
-
-    /*
-     * Encabezado: si hay lluvia que merezca la pena, gana ella. Los grados
-     * maximo y minimo se leen igual en la propia grafica, pero "a que hora
-     * llueve" no se puede deducir de unas barras de seis pixeles.
-     */
-    if (lluvia_max >= 30) {
-        snprintf(buf, sizeof(buf), "%d%% %02dH", lluvia_max, hora_lluvia);
-    } else {
-        snprintf(buf, sizeof(buf), "%d`/%d`", min, max);
-    }
-    /* A la izquierda la hora en la que arranca, no un "12H" generico: la
-       ventana siempre son doce horas, asi que lo que no se sabe es desde
-       cuando, y sin eso la curva no se puede situar en el dia. */
-    char desde[8];
-    snprintf(desde, sizeof(desde), "%02dH", f->hora0);
-    ssd1306_text(&s_oled, 0, 0, desde, 1, true);
-    ssd1306_text(&s_oled, SSD1306_WIDTH - ssd1306_text_width(buf, 1) + 1, 0, buf, 1, true);
-
-    /* Un tramo plano no debe salir pegado al suelo: sin rango, todo a media altura. */
-    int rango = max - min;
-    int y_ant = 0, x_ant = 0;
-
-    for (int i = 0; i < f->horas; i++) {
-        int x = FC_X0 + i * FC_PASO;
-        int y = rango > 0
-              ? FC_Y_BOT - (f->temp[i] - min) * (FC_Y_BOT - FC_Y_TOP) / rango
-              : (FC_Y_TOP + FC_Y_BOT) / 2;
-
-        if (i > 0) {
-            ssd1306_line(&s_oled, x_ant, y_ant, x, y, true);
-        }
-        /* Un punto gordo en cada hora: sobre la linea sola no se distingue
-           donde acaba una hora y empieza la siguiente. */
-        ssd1306_fill_rect(&s_oled, x - 1, y - 1, 3, 3, true);
-        x_ant = x;
-        y_ant = y;
-
-        /* Lluvia: barra hacia arriba desde el borde inferior. Solo a partir del
-           20 %, que por debajo es ruido del modelo y llenaria la fila de
-           tocones que no significan nada. */
-        if (f->prob[i] >= 20) {
-            int alto = 1 + f->prob[i] * (FC_LLUVIA_H - 1) / 100;
-            ssd1306_fill_rect(&s_oled, x - 2, FC_LLUVIA_Y - alto + 1, 5, alto, true);
-        }
-    }
-}
-
-/*
- * Vista 4: BitCat en medio, con la hora chica arriba a la izquierda y el clima
- * arriba a la derecha. El humor cambia solo cada 15 minutos.
- */
-static void actualizar_humor(void)
-{
-    int64_t ahora = esp_timer_get_time();
-    if (s_expr_us != 0 && ahora - s_expr_us < EXPR_PERIODO_US) {
-        return;
-    }
-    /* Se descarta la repetida: si sale la misma, el cambio seria invisible. */
-    bitcat_expr_t nueva;
-    do {
-        nueva = esp_random() % BITCAT_EXPR_COUNT;
-    } while (nueva == s_expr);
-
-    s_expr = nueva;
-    s_expr_us = ahora;
-    ESP_LOGI(TAG, "humor: %s", bitcat_expr_nombre(s_expr));
-}
-
-/*
  * Fuente de 3x5 solo para la version. La de 5x7 ya esta en su tamaño minimo, y
  * ahi el numero competiria con la hora y la temperatura; a 3x5 se lee cuando lo
  * buscas y desaparece cuando no. Solo cubre lo que hace falta: digitos, punto,
@@ -458,6 +351,14 @@ static const char *mini_glifo(char c)
     return NADA[0];
 }
 
+/* Ancho que ocupara la cadena. Se necesita antes de dibujar para centrarla, que
+   es justo lo que draw_mini() no puede dar porque lo devuelve al terminar. */
+static int draw_mini_ancho(const char *s)
+{
+    size_t n = strlen(s);
+    return n > 0 ? (int)n * (MINI_W + 1) - 1 : 0;
+}
+
 /* Devuelve el ancho dibujado. Cada glifo ocupa 3 px mas 1 de separacion. */
 static int draw_mini(int x, int y, const char *s)
 {
@@ -475,6 +376,77 @@ static int draw_mini(int x, int y, const char *s)
         ancho += MINI_W + 1;
     }
     return ancho > 0 ? ancho - 1 : 0;
+}
+
+/*
+ * Vista 3: las proximas seis horas, cada una con su hora, su icono y su
+ * temperatura.
+ *
+ * Seis columnas de 21 px. Con doce cabrian los numeros pero no el icono, y sin
+ * icono hay que leerse la grafica entera para saber si va a llover, que es
+ * justo lo que se mira de un vistazo.
+ *
+ * La hora va en la fuente de 3x5 y la temperatura en la de 5x7: las dos no caben
+ * grandes, y de las dos la que se consulta es la temperatura. La hora solo hace
+ * falta para situar la columna, y para eso basta con distinguirla.
+ */
+#define FC_COLS   6
+#define FC_ANCHO  21
+#define FC_X0     ((SSD1306_WIDTH - FC_COLS * FC_ANCHO) / 2)
+#define FC_Y_HORA 0
+#define FC_Y_ICON 6
+#define FC_Y_TEMP 21
+
+static void draw_forecast(const forecast_t *f, bool have_time)
+{
+    char buf[8];
+
+    if (f->horas == 0) {
+        text_center(4, "PRONOSTICO", 1);
+        text_center(18, have_time ? "SINCRONIZA" : "SIN HORA AUN", 1);
+        return;
+    }
+
+    for (int i = 0; i < f->horas && i < FC_COLS; i++) {
+        int x = FC_X0 + i * FC_ANCHO;
+        int hora = (f->hora0 + i) % 24;
+
+        snprintf(buf, sizeof(buf), "%02d", hora);
+        int w = draw_mini_ancho(buf);
+        draw_mini(x + (FC_ANCHO - w) / 2, FC_Y_HORA, buf);
+
+        /* La luna en vez del sol de noche, con la hora de esa columna y no con
+           la actual: a las 18:00 las ultimas del pronostico ya son de noche. */
+        bool noche = hora < 6 || hora >= 20;
+        weather_draw_icon_mini(&s_oled, x + (FC_ANCHO - 13) / 2, FC_Y_ICON,
+                               f->wmo[i], noche);
+
+        snprintf(buf, sizeof(buf), "%d", f->temp[i]);
+        /* ssd1306_text_width incluye el espacio final; se descuenta al centrar. */
+        w = ssd1306_text_width(buf, 1) - 1;
+        ssd1306_text(&s_oled, x + (FC_ANCHO - w) / 2, FC_Y_TEMP, buf, 1, true);
+    }
+}
+
+/*
+ * Vista 4: BitCat en medio, con la hora chica arriba a la izquierda y el clima
+ * arriba a la derecha. El humor cambia solo cada 15 minutos.
+ */
+static void actualizar_humor(void)
+{
+    int64_t ahora = esp_timer_get_time();
+    if (s_expr_us != 0 && ahora - s_expr_us < EXPR_PERIODO_US) {
+        return;
+    }
+    /* Se descarta la repetida: si sale la misma, el cambio seria invisible. */
+    bitcat_expr_t nueva;
+    do {
+        nueva = esp_random() % BITCAT_EXPR_COUNT;
+    } while (nueva == s_expr);
+
+    s_expr = nueva;
+    s_expr_us = ahora;
+    ESP_LOGI(TAG, "humor: %s", bitcat_expr_nombre(s_expr));
 }
 
 /*

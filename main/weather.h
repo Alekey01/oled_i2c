@@ -24,5 +24,8 @@ bool weather_es_despejado(int code);
 /* Icono de 30x30 px con la esquina superior izquierda en (x, y). */
 void weather_draw_icon(ssd1306_t *d, int x, int y, int wmo_code, bool night);
 
+/* Version de 13x13 para el pronostico por horas, donde no caben seis de 30. */
+void weather_draw_icon_mini(ssd1306_t *d, int x, int y, int wmo_code, bool night);
+
 /* Grados a punto cardinal ("NE", "SSO", ...). */
 const char *weather_wind_dir(int degrees);
