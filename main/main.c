@@ -492,6 +492,65 @@ static void humor_por_clima(const weather_t *w, const struct tm *t, bool have_ti
     *expr = s_expr;
 }
 
+/*
+ * Animacion de reposo de la vista del gato.
+ *
+ * El gato se queda sentado —es su vista, no la del paseo— asi que el movimiento
+ * lo pone el fondo: nubes de dia y estrellas de noche, cruzando de derecha a
+ * izquierda. Van a tres velocidades distintas para que se lea profundidad; con
+ * todas al mismo paso el fondo parece una sola lamina deslizandose.
+ *
+ * Y un parpadeo cada pocos segundos. Es lo que mas hace por que no parezca una
+ * imagen congelada, porque es lo unico que pasa en la cara, que es donde se
+ * mira. Los ojos cerrados ya existen como expresion: BITCAT_DORMIDO es la raya
+ * horizontal que usa el gato de madrugada.
+ */
+#define IDLE_FONDO   3
+#define IDLE_MS      120
+#define PARPADEO_CADA 33     /* ~4 s a 120 ms por cuadro */
+#define PARPADEO_DURA 2      /* ~240 ms con los ojos cerrados */
+
+/* Alturas repartidas por la franja que queda libre entre la hora y la version. */
+static const int IDLE_Y[IDLE_FONDO] = {10, 16, 21};
+static int s_idle_x[IDLE_FONDO];
+static int s_cat_tick;
+
+static void cat_reset(void)
+{
+    s_cat_tick = 0;
+    for (int i = 0; i < IDLE_FONDO; i++) {
+        s_idle_x[i] = SSD1306_WIDTH / IDLE_FONDO * i + i * 7;
+    }
+}
+
+static void cat_step(void)
+{
+    s_cat_tick++;
+    for (int i = 0; i < IDLE_FONDO; i++) {
+        /* La de delante avanza cada cuadro, la siguiente uno de cada dos, y asi:
+           es el paralaje, y sale sin guardar decimales. */
+        if (s_cat_tick % (i + 1) != 0) {
+            continue;
+        }
+        if (--s_idle_x[i] < -10) {
+            s_idle_x[i] = SSD1306_WIDTH + i * 9;
+        }
+    }
+}
+
+static void nube(int x, int y)
+{
+    ssd1306_fill_rect(&s_oled, x + 2, y, 4, 1, true);
+    ssd1306_fill_rect(&s_oled, x, y + 1, 8, 1, true);
+}
+
+static void estrella(int x, int y)
+{
+    ssd1306_pixel(&s_oled, x + 1, y, true);
+    ssd1306_fill_rect(&s_oled, x, y + 1, 3, 1, true);
+    ssd1306_pixel(&s_oled, x + 1, y + 2, true);
+}
+
 static void draw_cat(const weather_t *w, const struct tm *t, bool have_time)
 {
     char buf[16];
@@ -514,6 +573,27 @@ static void draw_cat(const weather_t *w, const struct tm *t, bool have_time)
     bitcat_expr_t expr;
     bitcat_acc_t acc;
     humor_por_clima(w, t, have_time, &pose, &expr, &acc);
+
+    /* El fondo va antes que el gato, y despues se vacia su caja: asi las nubes
+       le pasan por detras y desaparecen en su silueta. Sin ese borrado se verian
+       a traves de los huecos del sprite, porque dibujar solo enciende pixeles y
+       el gato no tapa nada por si mismo. */
+    bool noche = have_time && (t->tm_hour < 6 || t->tm_hour >= 20);
+    for (int i = 0; i < IDLE_FONDO; i++) {
+        if (noche) {
+            estrella(s_idle_x[i], IDLE_Y[i]);
+        } else {
+            nube(s_idle_x[i], IDLE_Y[i]);
+        }
+    }
+    ssd1306_fill_rect(&s_oled, (SSD1306_WIDTH - BITCAT_W) / 2, 8,
+                      BITCAT_W, BITCAT_H, false);
+
+    /* Parpadeo. Se salta si ya esta dormido, que ahi los ojos estan cerrados de
+       serie y cerrarlos otra vez no se veria. */
+    if (expr != BITCAT_DORMIDO && (s_cat_tick % PARPADEO_CADA) < PARPADEO_DURA) {
+        expr = BITCAT_DORMIDO;
+    }
 
     /* 24 px de alto a partir de y=8 llegan justo al borde inferior. Los
        accesorios estan dibujados para caber dentro de la caja del sprite, que es
@@ -950,6 +1030,8 @@ static void display_task(void *arg)
                 s_walk_x = -BITCAT_W;
                 s_walk_tick = 0;
                 s_wave_left = 0;
+            } else if (last == VIEW_CAT) {
+                cat_reset();
             } else if (last == VIEW_ANIM) {
                 s_anim_i = 0;   /* que siempre arranque por el primer cuadro */
             } else if (last == VIEW_GAME) {
@@ -1039,6 +1121,10 @@ static void display_task(void *arg)
             walk_step();
             render();
             espera_ms = REFRESH_MS_WALK;
+        } else if (s_view == VIEW_CAT) {
+            cat_step();
+            render();
+            espera_ms = IDLE_MS;
         } else if (s_view == VIEW_ANIM) {
             anim_step();
             render();
