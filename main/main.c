@@ -46,7 +46,7 @@ static const char *TAG = "reloj8b";
 typedef enum {
     VIEW_CLOCK = 0,
     VIEW_WEATHER,
-    VIEW_TREND,    /* temperatura de las ultimas 24 h */
+    VIEW_FORECAST, /* pronostico de las proximas horas */
     VIEW_CAT,      /* BitCat en medio, hora y clima chicos arriba */
     VIEW_WALK,     /* BitCat cruzando la pantalla */
     VIEW_ANIM,     /* animacion dibujada en el celular; se salta si no hay */
@@ -97,32 +97,12 @@ static SemaphoreHandle_t s_draw_mux;   /* framebuffer y bus I2C */
 
 /* Estado compartido, protegido por s_mux. */
 static weather_t s_weather;
+static forecast_t s_fc;             /* pronostico; horas == 0 si no ha llegado */
 static int32_t s_tz_offset;         /* segundos respecto a UTC, los manda el celular */
 static bool s_time_set;
 static int64_t s_last_sync_us;
 
-/*
- * Historial de temperatura para la vista de 24 h. Cada ranura guarda un grado
- * entero y el numero de hora absoluta (horas desde epoch, ya en local) en que se
- * tomo. Al indexar por (hora % 24) el buffer se recicla solo: una ranura cuya
- * hora quede a mas de 24 de la actual es de ayer y se ignora sin tener que
- * limpiarla.
- */
-#define HIST_H 24
-
-typedef struct {
-    int8_t grados[HIST_H];
-    uint32_t hora[HIST_H];   /* 0 = ranura nunca escrita */
-} hist_t;
-
-static hist_t s_hist;
-
-/* La escritura en flash la hace la tarea de pantalla, no la del BLE: guardar
-   toma decenas de ms y no tienen por que caerle al callback de una escritura. */
-static volatile bool s_hist_por_guardar;
-
 #define NVS_NS   "bitcat"
-#define NVS_HIST "hist24"
 
 static volatile view_t s_view = VIEW_CLOCK;
 
@@ -148,52 +128,25 @@ static const char *DIAS[7]   = {"DOM", "LUN", "MAR", "MIE", "JUE", "VIE", "SAB"}
 static const char *MESES[12] = {"ENE", "FEB", "MAR", "ABR", "MAY", "JUN",
                                 "JUL", "AGO", "SEP", "OCT", "NOV", "DIC"};
 
-/* -------------------------------------------- historial en flash (NVS) */
+/* ------------------------------------------------- limpieza de la flash */
 
 /*
- * Sin esto el historial se perdia con cualquier reinicio, incluido el del propio
- * OTA: actualizar a media tarde borraba la grafica del dia.
- *
- * No hace falta descartar lo viejo al cargar. Cada ranura guarda la hora
- * absoluta en que se escribio, y draw_trend() ya ignora las que no cuadran con
- * la hora actual: un reloj apagado una semana muestra la grafica vacia solo.
+ * La vista de las ultimas 24 h ya no existe, pero su blob sigue ocupando sitio
+ * en los relojes que vienen de una version anterior. Se borra una vez: la
+ * particion NVS son 20 KB y ahi tambien viven las animaciones, que son 2 KB
+ * cada una, asi que no sobra espacio como para dejar basura.
  */
-static void hist_cargar(void)
+static void borrar_historial_viejo(void)
 {
     nvs_handle_t h;
-    if (nvs_open(NVS_NS, NVS_READONLY, &h) != ESP_OK) {
-        return;   /* primera vez: todavia no existe el espacio */
+    if (nvs_open(NVS_NS, NVS_READWRITE, &h) != ESP_OK) {
+        return;
     }
-
-    size_t len = sizeof(s_hist);
-    esp_err_t err = nvs_get_blob(h, NVS_HIST, &s_hist, &len);
+    if (nvs_erase_key(h, "hist24") == ESP_OK) {
+        nvs_commit(h);
+        ESP_LOGI(TAG, "borrado el historial de 24 h de una version anterior");
+    }
     nvs_close(h);
-
-    if (err != ESP_OK || len != sizeof(s_hist)) {
-        memset(&s_hist, 0, sizeof(s_hist));   /* formato viejo o dato corrupto */
-        return;
-    }
-    ESP_LOGI(TAG, "historial de 24 h recuperado de nvs");
-}
-
-static void hist_guardar(const hist_t *h)
-{
-    nvs_handle_t n;
-    esp_err_t err = nvs_open(NVS_NS, NVS_READWRITE, &n);
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "nvs_open fallo: %s", esp_err_to_name(err));
-        return;
-    }
-
-    err = nvs_set_blob(n, NVS_HIST, h, sizeof(*h));
-    if (err == ESP_OK) {
-        err = nvs_commit(n);
-    }
-    nvs_close(n);
-
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "no se pudo guardar el historial: %s", esp_err_to_name(err));
-    }
 }
 
 /* ------------------------------------------------ callbacks desde el BLE */
@@ -210,12 +163,6 @@ static void on_time(uint32_t epoch_utc, int32_t tz_offset_sec)
     xSemaphoreGive(s_mux);
 }
 
-/* Redondeo al entero mas cercano sin arrastrar math.h por una sola cuenta. */
-static int redondear(float v)
-{
-    return (int)(v + (v >= 0 ? 0.5f : -0.5f));
-}
-
 static void on_weather(const weather_t *w)
 {
     xSemaphoreTake(s_mux, portMAX_DELAY);
@@ -223,20 +170,14 @@ static void on_weather(const weather_t *w)
     s_weather.valid = true;
     s_last_sync_us = esp_timer_get_time();
 
-    /* Sin hora no hay donde archivarlo: la ranura se calcula a partir de ella. */
-    if (s_time_set) {
-        uint32_t hora = (uint32_t)((time(NULL) + s_tz_offset) / 3600);
-        int i = hora % HIST_H;
+    xSemaphoreGive(s_mux);
+}
 
-        /* Solo se pide guardar al estrenar hora, no en cada clima que llega:
-           son 24 escrituras al dia en vez de 144, y lo que se pierde en un corte
-           es como mucho la barra de la hora en curso. */
-        if (s_hist.hora[i] != hora) {
-            s_hist_por_guardar = true;
-        }
-        s_hist.grados[i] = (int8_t)redondear(w->temp_c);
-        s_hist.hora[i] = hora;
-    }
+static void on_forecast(const forecast_t *f)
+{
+    xSemaphoreTake(s_mux, portMAX_DELAY);
+    s_fc = *f;
+    s_last_sync_us = esp_timer_get_time();
     xSemaphoreGive(s_mux);
 }
 
@@ -377,66 +318,89 @@ static void draw_weather(const weather_t *w, const struct tm *t, bool have_time)
     ssd1306_text(&s_oled, 34, 25, buf, 1, true);
 }
 
-/* Vista 3: una barra por hora con la temperatura de las ultimas 24. */
-#define TREND_X0   4
-#define TREND_STEP 5
-#define TREND_BAR  4
-#define TREND_Y1   31                       /* piso de las barras */
-#define TREND_ALTO 23                       /* de y=9 a y=31 */
+/*
+ * Vista 3: pronostico de las proximas horas.
+ *
+ * Linea para la temperatura y barras para la lluvia, y no barras para las dos
+ * cosas: son magnitudes distintas y con la misma forma habria que mirarlas dos
+ * veces para saber cual es cual. La linea ademas deja ver la tendencia —si
+ * refresca por la tarde— que es lo que se le pregunta a un pronostico, mientras
+ * que de la lluvia solo importa cuanta hay y a que hora.
+ */
+#define FC_X0    6
+#define FC_PASO  10                  /* 12 horas x 10 px = 120, centrado en 128 */
+#define FC_Y_TOP 10                  /* techo de la linea de temperatura */
+#define FC_Y_BOT 23                  /* suelo de la linea */
+/* Dos pixeles de aire entre la linea y las barras: sin ellos, un minimo de
+   temperatura que caiga sobre una hora de lluvia se pega a su barra y las dos
+   cosas se leen como una sola mancha. */
+#define FC_LLUVIA_Y 31               /* base de las barras de lluvia */
+#define FC_LLUVIA_H 6                /* 100 % = 6 px */
 
-static void draw_trend(const hist_t *h, uint32_t hora_actual, bool have_time)
+static void draw_forecast(const forecast_t *f, bool have_time)
 {
     char buf[32];
 
-    if (!have_time) {
-        text_center(12, "SIN HORA AUN", 1);
+    if (f->horas < 2) {
+        text_center(4, "PRONOSTICO", 1);
+        text_center(18, have_time ? "SINCRONIZA" : "SIN HORA AUN", 1);
         return;
     }
 
-    /* Se recorren las 24 horas de la mas vieja a la mas nueva. Una ranura solo
-       cuenta si su marca coincide con la hora que le toca: asi las que quedaron
-       de ayer se descartan solas, sin tener que limpiar nada. */
-    int valores[HIST_H];
-    bool hay[HIST_H];
-    int n = 0, min = 127, max = -128;
-
-    for (int i = 0; i < HIST_H; i++) {
-        uint32_t hora = hora_actual - (HIST_H - 1) + i;
-        int slot = hora % HIST_H;
-        hay[i] = (h->hora[slot] == hora);
-        if (!hay[i]) {
-            continue;
+    int min = 127, max = -128, lluvia_max = 0, hora_lluvia = -1;
+    for (int i = 0; i < f->horas; i++) {
+        if (f->temp[i] < min) min = f->temp[i];
+        if (f->temp[i] > max) max = f->temp[i];
+        if (f->prob[i] > lluvia_max) {
+            lluvia_max = f->prob[i];
+            hora_lluvia = (f->hora0 + i) % 24;
         }
-        valores[i] = h->grados[slot];
-        if (valores[i] < min) min = valores[i];
-        if (valores[i] > max) max = valores[i];
-        n++;
     }
 
-    if (n < 2) {
-        text_center(4, "HISTORIAL 24H", 1);
-        text_center(18, n ? "FALTAN HORAS" : "SIN DATOS AUN", 1);
-        return;
+    /*
+     * Encabezado: si hay lluvia que merezca la pena, gana ella. Los grados
+     * maximo y minimo se leen igual en la propia grafica, pero "a que hora
+     * llueve" no se puede deducir de unas barras de seis pixeles.
+     */
+    if (lluvia_max >= 30) {
+        snprintf(buf, sizeof(buf), "%d%% %02dH", lluvia_max, hora_lluvia);
+    } else {
+        snprintf(buf, sizeof(buf), "%d`/%d`", min, max);
     }
-
-    ssd1306_text(&s_oled, 0, 0, "24H", 1, true);
-    snprintf(buf, sizeof(buf), "%d`/%d`", min, max);
+    /* A la izquierda la hora en la que arranca, no un "12H" generico: la
+       ventana siempre son doce horas, asi que lo que no se sabe es desde
+       cuando, y sin eso la curva no se puede situar en el dia. */
+    char desde[8];
+    snprintf(desde, sizeof(desde), "%02dH", f->hora0);
+    ssd1306_text(&s_oled, 0, 0, desde, 1, true);
     ssd1306_text(&s_oled, SSD1306_WIDTH - ssd1306_text_width(buf, 1) + 1, 0, buf, 1, true);
 
-    /* Un dia plano no debe verse como una linea pegada al piso: sin rango, todas
-       las barras van a media altura. */
+    /* Un tramo plano no debe salir pegado al suelo: sin rango, todo a media altura. */
     int rango = max - min;
+    int y_ant = 0, x_ant = 0;
 
-    for (int i = 0; i < HIST_H; i++) {
-        int x = TREND_X0 + i * TREND_STEP;
-        if (!hay[i]) {
-            /* Hueco: un punto en el piso, para que se note que falta el dato. */
-            ssd1306_fill_rect(&s_oled, x + 1, TREND_Y1, 2, 1, true);
-            continue;
+    for (int i = 0; i < f->horas; i++) {
+        int x = FC_X0 + i * FC_PASO;
+        int y = rango > 0
+              ? FC_Y_BOT - (f->temp[i] - min) * (FC_Y_BOT - FC_Y_TOP) / rango
+              : (FC_Y_TOP + FC_Y_BOT) / 2;
+
+        if (i > 0) {
+            ssd1306_line(&s_oled, x_ant, y_ant, x, y, true);
         }
-        int alto = rango > 0 ? 1 + (valores[i] - min) * (TREND_ALTO - 1) / rango
-                             : TREND_ALTO / 2;
-        ssd1306_fill_rect(&s_oled, x, TREND_Y1 - alto + 1, TREND_BAR, alto, true);
+        /* Un punto gordo en cada hora: sobre la linea sola no se distingue
+           donde acaba una hora y empieza la siguiente. */
+        ssd1306_fill_rect(&s_oled, x - 1, y - 1, 3, 3, true);
+        x_ant = x;
+        y_ant = y;
+
+        /* Lluvia: barra hacia arriba desde el borde inferior. Solo a partir del
+           20 %, que por debajo es ruido del modelo y llenaria la fila de
+           tocones que no significan nada. */
+        if (f->prob[i] >= 20) {
+            int alto = 1 + f->prob[i] * (FC_LLUVIA_H - 1) / 100;
+            ssd1306_fill_rect(&s_oled, x - 2, FC_LLUVIA_Y - alto + 1, 5, alto, true);
+        }
     }
 }
 
@@ -894,7 +858,7 @@ static void render(void)
 
     xSemaphoreTake(s_mux, portMAX_DELAY);
     weather_t w = s_weather;
-    hist_t hist = s_hist;
+    forecast_t fc = s_fc;
     int32_t tz = s_tz_offset;
     bool have_time = s_time_set;
     int64_t last_sync = s_last_sync_us;
@@ -902,11 +866,9 @@ static void render(void)
 
     /* La hora del sistema se guarda en UTC; el offset del celular la vuelve local. */
     struct tm tm_now = {0};
-    uint32_t hora_abs = 0;
     if (have_time) {
         time_t local = time(NULL) + tz;
         gmtime_r(&local, &tm_now);
-        hora_abs = (uint32_t)(local / 3600);
     }
 
     ssd1306_clear(&s_oled);
@@ -921,8 +883,8 @@ static void render(void)
         case VIEW_WEATHER:
             draw_weather(&w, &tm_now, have_time);
             break;
-        case VIEW_TREND:
-            draw_trend(&hist, hora_abs, have_time);
+        case VIEW_FORECAST:
+            draw_forecast(&fc, have_time);
             break;
         case VIEW_CAT:
             draw_cat(&w, &tm_now, have_time);
@@ -1042,15 +1004,7 @@ static void display_task(void *arg)
             battery_actualizar();
         }
 
-        if (s_hist_por_guardar) {
-            s_hist_por_guardar = false;
-            xSemaphoreTake(s_mux, portMAX_DELAY);
-            hist_t copia = s_hist;
-            xSemaphoreGive(s_mux);
-            hist_guardar(&copia);   /* fuera del mutex: la flash es lenta */
-        }
-
-        /* Igual que el historial: dos kilobytes a la flash no pueden salir del
+        /* Dos kilobytes a la flash no pueden salir del
            callback de una escritura BLE. */
         anim_guardar_si_toca();
 
@@ -1536,7 +1490,7 @@ void app_main(void)
     gpio_reset_pin(CONFIG_APP_IMU_INT_GPIO);
 #endif
 
-    hist_cargar();
+    borrar_historial_viejo();
     anim_cargar();
 
     /* Sin APP_BATTERY_GPIO configurado no hace nada y no falla. */
@@ -1637,7 +1591,8 @@ void app_main(void)
         snprintf(ble_name, sizeof(ble_name), "%s", CONFIG_APP_BLE_NAME);
     }
 
-    const ble_sync_cb_t cb = {.on_time = on_time, .on_weather = on_weather};
+    const ble_sync_cb_t cb = {.on_time = on_time, .on_weather = on_weather,
+                              .on_forecast = on_forecast};
     err = ble_sync_start_debug(ble_name, &cb, boot_ble_status);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "BLE no pudo arrancar: %s", esp_err_to_name(err));

@@ -32,6 +32,7 @@ static const ble_uuid128_t chr_ota_ctrl = UUID128_APP(0x04, 0x00);
 static const ble_uuid128_t chr_ota_data = UUID128_APP(0x05, 0x00);
 static const ble_uuid128_t chr_info     = UUID128_APP(0x06, 0x00);
 static const ble_uuid128_t chr_anim     = UUID128_APP(0x07, 0x00);
+static const ble_uuid128_t chr_fc       = UUID128_APP(0x08, 0x00);
 
 /* Ordenes de la caracteristica de animacion. */
 #define ANIM_CMD_START  0x01   /* + cuadros(1) + retardo en decenas de ms(1) */
@@ -424,7 +425,9 @@ static int chr_write(uint16_t conn, uint16_t attr, struct ble_gatt_access_ctxt *
         return anim_ctrl_write(datos, len);
     }
 
-    uint8_t buf[16];
+    /* 40 y no 16: el pronostico son 2 + 2x12 = 26 bytes, y con el buffer justo
+       para la hora y el clima llegaba recortado sin dar ningun error. */
+    uint8_t buf[40];
     uint16_t len = 0;
     int rc = ble_hs_mbuf_to_flat(ctxt->om, buf, sizeof(buf), &len);
     if (rc != 0) {
@@ -447,6 +450,24 @@ static int chr_write(uint16_t conn, uint16_t attr, struct ble_gatt_access_ctxt *
         ESP_LOGI(TAG, "hora recibida: epoch=%lu offset=%ld s", (unsigned long)epoch, (long)offset);
         if (s_cb.on_time) {
             s_cb.on_time(epoch, offset);
+        }
+        return 0;
+    }
+
+    if (ble_uuid_cmp(ctxt->chr->uuid, &chr_fc.u) == 0) {
+        if (len < 2 || buf[0] == 0 || buf[0] > BLE_SYNC_FC_MAX ||
+            len != (uint16_t)(2 + 2 * buf[0])) {
+            ESP_LOGW(TAG, "pronostico: %d bytes no cuadran con %d horas", len, buf[0]);
+            return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
+        }
+        forecast_t f = {.horas = buf[0], .hora0 = buf[1]};
+        for (int i = 0; i < f.horas; i++) {
+            f.temp[i] = (int8_t)buf[2 + i * 2];
+            f.prob[i] = buf[3 + i * 2];
+        }
+        ESP_LOGI(TAG, "pronostico: %u horas desde las %u:00", f.horas, f.hora0);
+        if (s_cb.on_forecast) {
+            s_cb.on_forecast(&f);
         }
         return 0;
     }
@@ -529,6 +550,11 @@ static const struct ble_gatt_svc_def gatt_svcs[] = {
                    asi que perder uno en silencio dejaria un cuadro con basura
                    dentro y sin forma de enterarse. */
                 .uuid = &chr_anim.u,
+                .access_cb = chr_write,
+                .flags = BLE_GATT_CHR_F_WRITE,
+            },
+            {
+                .uuid = &chr_fc.u,
                 .access_cb = chr_write,
                 .flags = BLE_GATT_CHR_F_WRITE,
             },
