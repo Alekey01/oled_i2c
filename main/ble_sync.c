@@ -193,6 +193,10 @@ static void pedir_conexion(bool rapida)
     }
 }
 
+/* Declarada aqui porque pedir_conexion() tiene que poder cancelar la espera de
+   los parametros lentos, y el temporizador se define mas abajo. */
+static void cancelar_params_lentos(void);
+
 /*
  * Los parametros lentos no se piden al conectar, sino unos segundos despues.
  *
@@ -210,6 +214,13 @@ static esp_timer_handle_t s_timer_params;
 static void params_lentos_cb(void *arg)
 {
     pedir_conexion(false);
+}
+
+static void cancelar_params_lentos(void)
+{
+    if (s_timer_params != NULL) {
+        esp_timer_stop(s_timer_params);
+    }
 }
 
 static void programar_params_lentos(void)
@@ -270,6 +281,13 @@ static int ota_ctrl_write(const uint8_t *buf, uint16_t len)
             notificar_ota(OTA_EST_ERROR, 1);
             return BLE_ATT_ERR_UNLIKELY;
         }
+        /*
+         * Sin esto, una actualizacion que empiece dentro de los primeros cinco
+         * segundos de la conexion se encuentra a media transferencia con que
+         * salta el temporizador y devuelve el enlace al modo lento: 300 ms de
+         * intervalo con latencia 4 en mitad del envio, que lo tumba.
+         */
+        cancelar_params_lentos();
         pedir_conexion(true);
         notificar_ota(OTA_EST_LISTO, 0);
         return 0;
@@ -455,16 +473,35 @@ static int chr_write(uint16_t conn, uint16_t attr, struct ble_gatt_access_ctxt *
     }
 
     if (ble_uuid_cmp(ctxt->chr->uuid, &chr_fc.u) == 0) {
-        if (len < 2 || buf[0] == 0 || buf[0] > BLE_SYNC_FC_MAX ||
-            len != (uint16_t)(2 + 3 * buf[0])) {
+        /*
+         * Se aceptan dos tamaños por hora, igual que el clima acepta con y sin
+         * viento. El de dos bytes es el de la version anterior, sin codigo de
+         * cielo. Sin esto, una pagina y un reloj que no vayan a la par se pasan
+         * el dia dando "invalid attribute length" en cada sincronizacion, y el
+         * usuario ve un error rojo por una diferencia de version que se arregla
+         * sola en cuanto actualice.
+         */
+        uint8_t por_hora = 0;
+        if (len >= 2 && buf[0] > 0 && buf[0] <= BLE_SYNC_FC_MAX) {
+            if (len == (uint16_t)(2 + 3 * buf[0])) {
+                por_hora = 3;
+            } else if (len == (uint16_t)(2 + 2 * buf[0])) {
+                por_hora = 2;
+            }
+        }
+        if (por_hora == 0) {
             ESP_LOGW(TAG, "pronostico: %d bytes no cuadran con %d horas", len, buf[0]);
             return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
         }
+
         forecast_t f = {.horas = buf[0], .hora0 = buf[1]};
         for (int i = 0; i < f.horas; i++) {
-            f.temp[i] = (int8_t)buf[2 + i * 3];
-            f.prob[i] = buf[3 + i * 3];
-            f.wmo[i]  = buf[4 + i * 3];
+            const uint8_t *e = &buf[2 + i * por_hora];
+            f.temp[i] = (int8_t)e[0];
+            f.prob[i] = e[1];
+            /* Sin codigo de cielo, nublado: en una fila de seis columnas un
+               hueco se lee como que falta el dato. */
+            f.wmo[i] = (por_hora == 3) ? e[2] : 3;
         }
         ESP_LOGI(TAG, "pronostico: %u horas desde las %u:00", f.horas, f.hora0);
         if (s_cb.on_forecast) {
@@ -606,9 +643,7 @@ static int gap_event(struct ble_gap_event *event, void *arg)
     case BLE_GAP_EVENT_DISCONNECT:
         s_caidas++;
         s_ultima_razon = event->disconnect.reason;
-        if (s_timer_params != NULL) {
-            esp_timer_stop(s_timer_params);   /* ya no hay a quien pedirselo */
-        }
+        cancelar_params_lentos();   /* ya no hay a quien pedirselo */
         ESP_LOGI(TAG, "desconectado: razon 0x%03x, %s (van %u)",
                  s_ultima_razon, razon_str(s_ultima_razon), s_caidas);
         s_connected = false;

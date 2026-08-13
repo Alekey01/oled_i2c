@@ -25,6 +25,12 @@ CONFIG_BT_NIMBLE_MAX_CONNECTIONS=1
 # escritura y medio mega tardaria una eternidad.
 CONFIG_BT_NIMBLE_ATT_PREFERRED_MTU=517
 
+# El callback de escritura del OTA corre en la tarea del host NimBLE, y ahi
+# dentro se descifra con RSA-3072 y AES-GCM y se escribe en flash. Los 4096 por
+# defecto estan pensados para un servidor GATT que mueve datos pequeños, no para
+# eso: las temporales de mbedtls solas ya se comen varios kilobytes.
+CONFIG_BT_NIMBLE_HOST_TASK_STACK_SIZE=8192
+
 # Diagnostico de un reinicio en bucle al arrancar BLE: asserts extra del host
 # NimBLE y medio segundo de margen para que el backtrace llegue a la consola
 # USB antes del reset.

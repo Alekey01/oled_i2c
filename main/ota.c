@@ -142,20 +142,38 @@ esp_err_t ota_write(const uint8_t *datos, uint16_t len)
         .data_in_len = len,
     };
     esp_err_t err = esp_encrypted_img_decrypt_data(s_dec, &args);
+
+    /*
+     * El buffer de salida se suelta pase lo que pase, no solo cuando trae algo.
+     *
+     * Antes solo se liberaba dentro del if de data_out_len > 0, asi que si el
+     * descifrado fallaba a mitad, o si el componente reservaba sin llegar a
+     * producir bytes, ese trozo se quedaba en el heap. Son mas de mil trozos por
+     * actualizacion: lo que empieza como unos bytes acaba comiendose la memoria
+     * libre, y quedarse sin heap a media escritura de flash no termina en un
+     * error, termina en un panico.
+     *
+     * args esta inicializado con designadores, asi que data_out arranca en NULL
+     * y solo deja de serlo si el componente reservo: liberar aqui no puede
+     * soltar dos veces lo mismo.
+     */
+    esp_err_t w = ESP_OK;
+    if (err == ESP_OK || err == ESP_ERR_NOT_FINISHED) {
+        if (args.data_out_len > 0) {
+            w = esp_ota_write(s_handle, args.data_out, args.data_out_len);
+        }
+    }
+    free(args.data_out);
+
     if (err != ESP_OK && err != ESP_ERR_NOT_FINISHED) {
         ESP_LOGE(TAG, "descifrado fallo: %s", esp_err_to_name(err));
         ota_abort();
         return err;
     }
-
-    if (args.data_out_len > 0) {
-        esp_err_t w = esp_ota_write(s_handle, args.data_out, args.data_out_len);
-        free(args.data_out);     /* lo pide la API cuando devuelve algo */
-        if (w != ESP_OK) {
-            ESP_LOGE(TAG, "esp_ota_write fallo: %s", esp_err_to_name(w));
-            ota_abort();
-            return w;
-        }
+    if (w != ESP_OK) {
+        ESP_LOGE(TAG, "esp_ota_write fallo: %s", esp_err_to_name(w));
+        ota_abort();
+        return w;
     }
 
     s_recibido += len;
