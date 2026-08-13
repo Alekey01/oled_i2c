@@ -1277,7 +1277,14 @@ static void imu_task(void *arg)
         vTaskDelay(pdMS_TO_TICKS(2000));
 
         ulTaskNotifyTake(pdTRUE, 0);
-        ESP_ERROR_CHECK(gpio_wakeup_enable(CONFIG_APP_IMU_INT_GPIO, GPIO_INTR_LOW_LEVEL));
+        /* Sin ESP_ERROR_CHECK: esto corre en un bucle mientras el reloj se usa,
+           y ahi abortar significa reiniciarlo. Quedarse sin despertador por
+           movimiento es un incordio; reiniciar en la muñeca, un fallo. */
+        esp_err_t werr = gpio_wakeup_enable(CONFIG_APP_IMU_INT_GPIO, GPIO_INTR_LOW_LEVEL);
+        if (werr != ESP_OK) {
+            ESP_LOGW(TAG, "no se pudo rearmar el despertador del sensor: %s",
+                     esp_err_to_name(werr));
+        }
         gpio_intr_enable(CONFIG_APP_IMU_INT_GPIO);
     }
 }

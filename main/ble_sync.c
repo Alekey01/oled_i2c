@@ -4,6 +4,8 @@
 #include "esp_app_desc.h"
 #include "esp_log.h"
 #include "esp_ota_ops.h"
+#include "esp_system.h"
+#include "esp_timer.h"
 #include "host/ble_hs.h"
 #include "host/util/util.h"
 #include "nimble/nimble_port.h"
@@ -86,6 +88,29 @@ static const char *razon_str(uint16_t razon)
     }
 }
 
+/*
+ * Motivo del ultimo arranque, en corto. Va por BLE porque es la unica via que
+ * queda: el fallo solo sale con light sleep, y con light sleep no hay consola
+ * USB. Es lo que distingue un panico de un perro guardian o de un brownout, que
+ * llevan a sitios completamente distintos.
+ */
+static const char *reset_corto(void)
+{
+    switch (esp_reset_reason()) {
+    case ESP_RST_POWERON:   return "power";
+    case ESP_RST_SW:        return "sw";
+    case ESP_RST_PANIC:     return "panico";
+    case ESP_RST_INT_WDT:   return "intwdt";
+    case ESP_RST_TASK_WDT:  return "taskwdt";
+    case ESP_RST_WDT:       return "wdt";
+    case ESP_RST_BROWNOUT:  return "brownout";
+    case ESP_RST_DEEPSLEEP: return "deepsleep";
+    case ESP_RST_USB:       return "usb";
+    case ESP_RST_JTAG:      return "jtag";
+    default:                return "otro";
+    }
+}
+
 /* Anota los parametros que de verdad estan en vigor, que no tienen por que ser
    los que se pidieron: el celular puede quedarse con los suyos. */
 static void anotar_params(uint16_t handle)
@@ -153,6 +178,42 @@ static void pedir_conexion(bool rapida)
         ESP_LOGW(TAG, "no se pudo cambiar el intervalo a %s: %d",
                  rapida ? "rapido" : "lento", rc);
     }
+}
+
+/*
+ * Los parametros lentos no se piden al conectar, sino unos segundos despues.
+ *
+ * La spec le pide al periferico que espere T_GAP(conn_pause_peripheral) = 5 s
+ * antes de tocar los parametros, porque en ese hueco el celular esta
+ * descubriendo servicios. Pidiendolo dentro del propio evento CONNECT, Android
+ * lo ignoraba: el enlace se quedaba con sus valores de arranque —7.5 ms de
+ * intervalo, latencia 0— que son los mas agresivos que hay. O sea que el modo
+ * de ahorro no se activaba nunca y el radio iba a tope todo el rato.
+ */
+#define PAUSA_PARAMS_US (5LL * 1000000)
+
+static esp_timer_handle_t s_timer_params;
+
+static void params_lentos_cb(void *arg)
+{
+    pedir_conexion(false);
+}
+
+static void programar_params_lentos(void)
+{
+    if (s_timer_params == NULL) {
+        const esp_timer_create_args_t args = {
+            .callback = params_lentos_cb,
+            .name = "ble_params",
+        };
+        if (esp_timer_create(&args, &s_timer_params) != ESP_OK) {
+            ESP_LOGW(TAG, "sin temporizador: se piden los parametros ya mismo");
+            pedir_conexion(false);
+            return;
+        }
+    }
+    esp_timer_stop(s_timer_params);   /* da igual si no estaba armado */
+    esp_timer_start_once(s_timer_params, PAUSA_PARAMS_US);
 }
 
 /* Notificacion de 6 bytes: estado, bytes recibidos (uint32 LE) y codigo de error. */
@@ -239,12 +300,17 @@ static int chr_info_read(uint16_t conn, uint16_t attr, struct ble_gatt_access_ct
        version[] son 32 caracteres y label[] 17. */
     char info[192];
     int n = snprintf(info, sizeof(info),
-                     "%s %s mov=%lu caidas=%u razon=0x%03x itvl=%u lat=%u tmo=%u",
+                     "%s %s mov=%lu caidas=%u razon=0x%03x itvl=%u lat=%u tmo=%u "
+                     "reset=%s up=%lu",
                      desc->version, run->label, (unsigned long)imu_eventos(),
                      s_caidas, s_ultima_razon,
                      (unsigned)(s_itvl * 125 / 100),   /* ms */
                      s_latencia,
-                     (unsigned)(s_timeout * 10));      /* ms */
+                     (unsigned)(s_timeout * 10),       /* ms */
+                     reset_corto(),
+                     /* Segundos desde el arranque. Si al reconectar vale menos
+                        que el hueco que hubo sin enlace, es que se reinicio. */
+                     (unsigned long)(esp_timer_get_time() / 1000000));
     if (n < 0) {
         return BLE_ATT_ERR_UNLIKELY;
     }
@@ -418,7 +484,7 @@ static int gap_event(struct ble_gap_event *event, void *arg)
          * caso que importaba.
          */
         anotar_params(s_conn);   /* lo que eligio el celular al conectar */
-        pedir_conexion(false);
+        programar_params_lentos();
         break;
 
     case BLE_GAP_EVENT_CONN_UPDATE:
@@ -437,6 +503,9 @@ static int gap_event(struct ble_gap_event *event, void *arg)
     case BLE_GAP_EVENT_DISCONNECT:
         s_caidas++;
         s_ultima_razon = event->disconnect.reason;
+        if (s_timer_params != NULL) {
+            esp_timer_stop(s_timer_params);   /* ya no hay a quien pedirselo */
+        }
         ESP_LOGI(TAG, "desconectado: razon 0x%03x, %s (van %u)",
                  s_ultima_razon, razon_str(s_ultima_razon), s_caidas);
         s_connected = false;
