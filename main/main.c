@@ -1237,7 +1237,23 @@ static void imu_task(void *arg)
 
     while (1) {
         ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+
+        /*
+         * Hay que quitar las dos cosas, no solo la interrupcion.
+         *
+         * gpio_intr_disable() apaga el aviso al CPU, pero el despertador del
+         * light sleep vive en otro bit del mismo pin y sigue armado. Con la
+         * linea INT enclavada abajo —que es como esta mientras el reloj se
+         * mueve— el chip intenta dormirse, el nivel bajo lo despierta al
+         * instante, y vuelta a empezar: se queda girando en vacio sin que ni
+         * siquiera corra el manejador, porque la interrupcion si esta apagada.
+         *
+         * Es lo que hacia que subir la pausa de 200 ms a 2 s empeorara las
+         * cosas en vez de arreglarlas: alargaba diez veces la ventana en la que
+         * el chip no puede dormir ni atender el radio con holgura.
+         */
         gpio_intr_disable(CONFIG_APP_IMU_INT_GPIO);
+        gpio_wakeup_disable(CONFIG_APP_IMU_INT_GPIO);
 
         xSemaphoreTake(s_draw_mux, portMAX_DELAY);
         bool movimiento = imu_atender_int();
@@ -1261,6 +1277,7 @@ static void imu_task(void *arg)
         vTaskDelay(pdMS_TO_TICKS(2000));
 
         ulTaskNotifyTake(pdTRUE, 0);
+        ESP_ERROR_CHECK(gpio_wakeup_enable(CONFIG_APP_IMU_INT_GPIO, GPIO_INTR_LOW_LEVEL));
         gpio_intr_enable(CONFIG_APP_IMU_INT_GPIO);
     }
 }

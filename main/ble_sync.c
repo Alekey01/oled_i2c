@@ -360,23 +360,32 @@ static int gap_event(struct ble_gap_event *event, void *arg)
         }
         s_conn = event->connect.conn_handle;
         /*
-         * Los datos llegan cada 60 s, asi que no hace falta latencia de 30 ms.
-         * Con intervalo de 300 ms y latencia 4, el radio puede saltarse hasta 4
-         * eventos seguidos: despierta como mucho cada 1.5 s.
-         *
-         * El supervision timeout tiene que ser mayor que (1+latencia) * itvl_max
-         * * 2 = 3 s; se deja en 6 s.
+         * Los parametros lentos salen de pedir_conexion() y no de una copia
+         * local. Los habia duplicados aqui y las dos copias se separaron: al
+         * subir el supervision timeout se toco solo la de pedir_conexion(), que
+         * unicamente corre al terminar un OTA. Toda conexion normal seguia
+         * naciendo con el valor viejo, o sea que el arreglo no llegaba nunca al
+         * caso que importaba.
+         */
+        pedir_conexion(false);
+        break;
+
+    case BLE_GAP_EVENT_CONN_UPDATE:
+        /*
+         * Lo que se pide no es lo que queda: el celular puede rechazar la
+         * peticion y quedarse con los suyos. Sin este log no hay forma de saber
+         * con que intervalo y que timeout esta corriendo el enlace de verdad,
+         * que es justo lo que hace falta para saber por que se cae.
          */
         {
-            struct ble_gap_upd_params slow = {
-                .itvl_min = 80,               /* 100 ms, unidades de 1.25 ms */
-                .itvl_max = 240,              /* 300 ms */
-                .latency = 4,
-                .supervision_timeout = 600,   /* 6 s, unidades de 10 ms */
-            };
-            int rc = ble_gap_update_params(event->connect.conn_handle, &slow);
-            if (rc != 0) {
-                ESP_LOGW(TAG, "no se pudo negociar el intervalo lento: %d", rc);
+            struct ble_gap_conn_desc d;
+            if (ble_gap_conn_find(event->conn_update.conn_handle, &d) == 0) {
+                ESP_LOGI(TAG, "parametros: itvl %d (%d ms), latencia %d, "
+                              "timeout %d (%d ms), status %d",
+                         d.conn_itvl, d.conn_itvl * 125 / 100,
+                         d.conn_latency,
+                         d.supervision_timeout, d.supervision_timeout * 10,
+                         event->conn_update.status);
             }
         }
         break;
