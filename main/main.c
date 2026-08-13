@@ -9,6 +9,7 @@
  *   CLIMA  icono dibujado, temperatura, humedad, viento
  */
 
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/time.h>
@@ -1197,6 +1198,103 @@ static void button_task(void *arg)
 static TaskHandle_t s_imu_h;
 
 /*
+ * Deteccion del agite.
+ *
+ * La interrupcion del sensor solo dice "algo se movio". Para separar una
+ * sacudida a proposito de andar con el reloj puesto se muestrea medio segundo
+ * despues del aviso y se piden dos cosas a la vez:
+ *
+ *   recorrido  cuanto va y viene el eje. La gravedad es un valor fijo, asi que
+ *              al restar el minimo del maximo se cancela sola y da igual como
+ *              este orientado el reloj.
+ *   idas y venidas  una sacudida cruza el centro varias veces. Levantar el
+ *              brazo tiene recorrido de sobra pero cruza una sola vez, y es lo
+ *              que separa el gesto del movimiento normal.
+ *
+ * En modo ciclo el sensor refresca a 20 Hz, o sea una muestra nueva cada 50 ms:
+ * pedirlas mas seguidas solo devolveria la misma dos veces.
+ */
+#define AGITE_MUESTRAS 12
+#define AGITE_PASO_MS  50
+#define AGITE_CRUCES   3
+
+static bool detectar_agite(void)
+{
+    int min[3] = {INT32_MAX, INT32_MAX, INT32_MAX};
+    int max[3] = {INT32_MIN, INT32_MIN, INT32_MIN};
+    int muestras[3][AGITE_MUESTRAS];
+    int n = 0;
+
+    for (int i = 0; i < AGITE_MUESTRAS; i++) {
+        int v[3];
+        xSemaphoreTake(s_draw_mux, portMAX_DELAY);
+        esp_err_t err = imu_leer(&v[0], &v[1], &v[2]);
+        xSemaphoreGive(s_draw_mux);
+
+        if (err == ESP_OK) {
+            for (int e = 0; e < 3; e++) {
+                muestras[e][n] = v[e];
+                if (v[e] < min[e]) min[e] = v[e];
+                if (v[e] > max[e]) max[e] = v[e];
+            }
+            n++;
+        }
+        vTaskDelay(pdMS_TO_TICKS(AGITE_PASO_MS));
+    }
+
+    if (n < AGITE_CRUCES + 1) {
+        return false;   /* el bus fallo demasiadas veces para decidir nada */
+    }
+
+    /* Eje que mas se movio. */
+    int eje = 0;
+    for (int e = 1; e < 3; e++) {
+        if (max[e] - min[e] > max[eje] - min[eje]) {
+            eje = e;
+        }
+    }
+    int swing = max[eje] - min[eje];
+
+    /* Se anota siempre, incluso si no llega a contar como gesto: es lo que deja
+       ver por BLE que eje mueve el reloj de verdad y con cuanta fuerza. */
+    imu_anotar_agite(eje, swing);
+
+    if (swing < CONFIG_APP_IMU_AGITE_MG) {
+        return false;
+    }
+#if CONFIG_APP_IMU_EJE_AGITE >= 0
+    if (eje != CONFIG_APP_IMU_EJE_AGITE) {
+        return false;   /* se movio, pero no en el sentido que cuenta */
+    }
+#endif
+
+    /* Idas y venidas: cuantas veces cruza el punto medio de su propio recorrido. */
+    int centro = (max[eje] + min[eje]) / 2;
+    int cruces = 0;
+    bool arriba = muestras[eje][0] > centro;
+    for (int i = 1; i < n; i++) {
+        bool ahora = muestras[eje][i] > centro;
+        if (ahora != arriba) {
+            cruces++;
+            arriba = ahora;
+        }
+    }
+
+    return cruces >= AGITE_CRUCES;
+}
+
+/* Agitando no se salta en el juego: ahi el salto es del boton, y un tropiezo
+   no deberia costarte la partida. */
+static void agite_cambiar_vista(void)
+{
+    if (s_view == VIEW_GAME) {
+        return;
+    }
+    s_view = (s_view + 1) % VIEW_COUNT;
+    ESP_LOGI(TAG, "agite: vista %d", s_view);
+}
+
+/*
  * Callar la interrupcion aqui dentro, no en la tarea, es lo unico que rompe la
  * tormenta.
  *
@@ -1271,10 +1369,20 @@ static void imu_task(void *arg)
         bool movimiento = imu_atender_int();
         xSemaphoreGive(s_draw_mux);
 
+        bool agitado = false;
         if (movimiento) {
+            /* La pantalla se enciende ya, sin esperar a saber si ademas fue una
+               sacudida: medio segundo de retraso en encender se nota. */
             s_screen_req_off = false;
             s_last_activity_us = esp_timer_get_time();
             xTaskNotifyGive(s_display_h);
+
+            agitado = detectar_agite();
+            if (agitado) {
+                agite_cambiar_vista();
+                s_last_activity_us = esp_timer_get_time();
+                xTaskNotifyGive(s_display_h);
+            }
         }
 
         /*
@@ -1285,8 +1393,13 @@ static void imu_task(void *arg)
          *
          * Dos segundos bastan: lo unico que hace falta es reiniciar la cuenta
          * atras de la pantalla, y esa es de ocho.
+         *
+         * Tras una sacudida se espera mucho menos. Ahi estas usando el reloj a
+         * proposito y lo normal es querer encadenar varias para llegar a la
+         * vista que buscas; dos segundos y medio entre una y otra harian pensar
+         * que no te ha hecho caso.
          */
-        vTaskDelay(pdMS_TO_TICKS(2000));
+        vTaskDelay(pdMS_TO_TICKS(agitado ? 250 : 2000));
 
         ulTaskNotifyTake(pdTRUE, 0);
         /* Sin ESP_ERROR_CHECK: esto corre en un bucle mientras el reloj se usa,

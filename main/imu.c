@@ -140,6 +140,27 @@ uint32_t imu_eventos(void)
     return s_eventos;
 }
 
+/*
+ * Que eje del sensor cae en el sentido izquierda-derecha depende de como este
+ * pegado el modulo, y desde el firmware no hay forma de saberlo. Guardando aqui
+ * la ultima medida y publicandola por BLE, se averigua agitando el reloj y
+ * mirando el numero, sin cable y sin tener que abrir nada.
+ */
+static int s_agite_eje = -1;
+static int s_agite_swing;
+
+void imu_anotar_agite(int eje, int swing)
+{
+    s_agite_eje = eje;
+    s_agite_swing = swing;
+}
+
+void imu_ultimo_agite(int *eje, int *swing)
+{
+    if (eje)   *eje = s_agite_eje;
+    if (swing) *swing = s_agite_swing;
+}
+
 esp_err_t imu_leer(int *x_mg, int *y_mg, int *z_mg)
 {
     if (!s_listo) {

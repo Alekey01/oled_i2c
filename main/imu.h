@@ -41,3 +41,14 @@ uint32_t imu_eventos(void);
 
 /* Aceleracion en mili-g. Cualquiera puede ser NULL. */
 esp_err_t imu_leer(int *x_mg, int *y_mg, int *z_mg);
+
+/*
+ * Ultima sacudida medida: que eje se movio mas (0=X, 1=Y, 2=Z) y cuanto recorrio
+ * en mili-g. Lo mide quien tiene el bus, y se publica por BLE para poder elegir
+ * el eje del gesto sin abrir el reloj ni conectarlo por cable.
+ *
+ * eje = -1 mientras no se haya medido ninguna. Cualquiera de los dos punteros
+ * puede ser NULL.
+ */
+void imu_anotar_agite(int eje, int swing);
+void imu_ultimo_agite(int *eje, int *swing);

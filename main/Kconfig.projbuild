@@ -52,6 +52,32 @@ menu "BitCat Watch (reloj 8 bits + clima por BLE)"
             muestras van cada 50 ms, asi que cada unidad son 50 ms de movimiento
             seguido, no 1 ms.
 
+    config APP_IMU_EJE_AGITE
+        int "Eje del agite que cambia de vista (0=X, 1=Y, 2=Z, -1=cualquiera)"
+        default 0
+        range -1 2
+        depends on APP_IMU_INT_GPIO >= 0
+        help
+            Que eje del sensor queda en el sentido izquierda-derecha depende de
+            como este pegado el modulo, y no hay forma de saberlo desde aqui.
+
+            Si agitando de lado no cambia de vista, mira el campo "ag=" que el
+            reloj publica por BLE: ahi sale el eje que mas se movio la ultima
+            vez y cuanto. Pon ese numero aqui.
+
+            -1 acepta cualquier eje: cambia de vista con cualquier sacudida,
+            venga del sentido que venga.
+
+    config APP_IMU_AGITE_MG
+        int "Recorrido minimo del agite, en mili-g"
+        default 900
+        range 200 2000
+        depends on APP_IMU_INT_GPIO >= 0
+        help
+            Cuanto tiene que ir y venir el eje dentro de la ventana para que
+            cuente como sacudida deliberada. 1000 son un g completo. Bajalo si
+            cuesta que responda, subelo si cambia de vista al andar.
+
             Con 1 basta un tiron. Subelo si la pantalla se enciende sola quieta
             sobre la mesa.
 
