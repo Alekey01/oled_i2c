@@ -27,10 +27,11 @@ typedef enum {
     BITCAT_EXPR_COUNT,
 } bitcat_expr_t;
 
-/* Accesorios: reaccionan al clima y a la hora. Se dibujan encima de la pose, y
-   estan pensados para caber dentro de la caja del sprite (mas unos pocos pixeles
-   a los lados en el caso del frio), porque en la vista del gato los 8 px de
-   arriba los ocupan la hora y la temperatura. */
+/* Accesorios: reaccionan al clima y a la hora. Se dibujan encima de la pose.
+   Casi todos caben dentro de la caja del sprite; el frio se sale unos pixeles a
+   los lados y la sombrilla se sale por arriba, hacia la franja que en la vista
+   del gato queda libre entre la hora y la temperatura. Lo que se salga de la
+   pantalla lo recorta ssd1306_pixel. */
 typedef enum {
     BITCAT_ACC_NINGUNO = 0,
     BITCAT_ACC_PARAGUAS,   /* lluvia: sombrilla sobre la patita levantada */

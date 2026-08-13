@@ -193,15 +193,31 @@ static void estampar(ssd1306_t *d, int x, int y, const char *const *filas, int n
     }
 }
 
-/* Sombrilla: va sobre la patita levantada de BITCAT_WAVE_A, que ocupa las
-   columnas 26..30. El mango es el propio brazo del gato. Arranca en la columna
-   25 y no antes: la oreja derecha llega hasta la 23, y pegadas se leen como una
-   sola mancha en vez de como dos cosas distintas. */
-static const char *const ACC_PARAGUAS[3] = {
-    "..##..",
-    ".####.",
-    "######",
+/*
+ * Sombrilla, centrada sobre la patita levantada de BITCAT_WAVE_A (columna 28).
+ *
+ * Se dibuja por encima de la caja del sprite, no dentro. Metida dentro solo
+ * caben tres filas justo encima de la patita, y a ese tamaño se pega al brazo y
+ * se lee como un bulto, no como una sombrilla. En la vista del gato la franja de
+ * arriba solo la ocupan la hora (a la izquierda) y la temperatura (a la
+ * derecha), asi que el centro esta libre y ahi cabe entera.
+ *
+ * Tres cosas la hacen reconocible a este tamaño, y ninguna sobra: el remate de
+ * arriba, el arco —que sin el es un triangulo— y el borde dentado, que son las
+ * varillas y es lo que la separa de una loma. El centro del dentado va macizo
+ * porque por ahi entra el mango, y un hueco justo ahi lo dejaria suelto.
+ */
+static const char *const ACC_PARAGUAS[6] = {
+    "............#............",
+    ".........#######.........",
+    "......#############......",
+    "...###################...",
+    "#########################",
+    ".###.###.#######.###.###.",
 };
+
+/* Del toldo a la patita. El brazo del gato sigue debajo y hace de continuacion. */
+static const char *const ACC_MANGO[5] = {"#", "#", "#", "#", "#"};
 
 /* Lentes: cubren por completo los ojos de 4x4, asi que funcionan con cualquier
    expresion sin tener que forzar la de abajo. */
@@ -233,7 +249,8 @@ static void dibujar_accesorio(ssd1306_t *d, int x, int y, bitcat_acc_t acc)
 {
     switch (acc) {
     case BITCAT_ACC_PARAGUAS:
-        estampar(d, x + 25, y + 0, ACC_PARAGUAS, 3);
+        estampar(d, x + 16, y - 8, ACC_PARAGUAS, 6);
+        estampar(d, x + 28, y - 2, ACC_MANGO, 5);
         break;
     case BITCAT_ACC_LENTES:
         estampar(d, x + 9, y + 6, ACC_LENTES, 4);
