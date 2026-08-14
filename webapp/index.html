@@ -163,7 +163,10 @@
     /* Sin esto, un hijo ancho (la consola, una linea larga del log) estira la
        columna y las dos pantallas dejan de medir lo mismo. */
     min-width: 0;
-    padding: 2px;   /* deja ver la sombra dura de los botones */
+    /* 2 px arriba y abajo para que se vea la sombra dura de los botones, y 3 a
+       los lados como colchon: si el navegador deja una rendija de la pantalla
+       vecina, que caiga en hueco y no encima de un borde. */
+    padding: 2px 3px;
   }
 
   /* --- editor de animacion --- */
@@ -272,7 +275,6 @@
 <nav id="pestanas">
   <button data-p="0" class="on">Reloj</button>
   <button data-p="1">Dibujo</button>
-  <button data-p="2">Juego</button>
 </nav>
 
 <div id="paginas">
@@ -336,7 +338,6 @@
       <div class="fila"><dt>Record</dt><dd id="vRecord">0</dd></div>
     </dl>
 
-    <button id="saltar">Saltar</button>
     <button id="reiniciar" class="sec">Reiniciar</button>
   </section>
 
@@ -1026,6 +1027,8 @@ const pager = $('paginas');
 const pestanas = [...$('pestanas').children];
 
 function marcarPestana(i) {
+  /* La tercera pantalla no tiene pestaña, asi que ahi no se enciende ninguna:
+     el indicador dice donde estas cuando hay donde señalar, y calla cuando no. */
   pestanas.forEach((b, j) => { b.className = j === i ? 'on' : ''; });
   juegoVisible(i === 2);
 }
@@ -1035,14 +1038,37 @@ function irA(i) {
      ritmo del pintado, asi que al pulsar la pestaña tardaria en encenderse lo
      que dure la animacion, y en una pestaña eso se lee como que no funciono. */
   marcarPestana(i);
-  pager.scrollTo({left: pager.clientWidth * i, behavior: 'smooth'});
+  /*
+   * Al borde real de la pantalla, no a clientWidth * i. El ancho del carrusel
+   * sale fraccionario —339.8125 px en un movil— y clientWidth lo redondea a
+   * 340, asi que multiplicar dejaba el desplazamiento un pixel largo y se veia
+   * asomar el borde blanco del panel de al lado. Justo lo que se veia como dos
+   * rayas verticales sueltas.
+   *
+   * Restando el offset del propio carrusel, que offsetLeft se mide contra el
+   * offsetParent —el body, con su padding de 18 px— y no contra el contenedor
+   * que hace scroll. Sin esa resta se pasaba de largo esos mismos 18 px.
+   */
+  const destino = pager.children[i];
+  if (destino) {
+    pager.scrollTo({left: destino.offsetLeft - pager.offsetLeft, behavior: 'smooth'});
+  }
 }
 
 pestanas.forEach((b, i) => { b.onclick = () => irA(i); });
 
 /* Y al deslizar con el dedo, que ahi no ha pasado por irA(). */
 pager.addEventListener('scroll', () => {
-  marcarPestana(Math.round(pager.scrollLeft / pager.clientWidth));
+  /* Con el ancho fraccionario, dividir por clientWidth puede caer justo en el
+     .5 y bailar entre dos pantallas: se elige la que tiene el borde mas cerca. */
+  const dist = i => Math.abs(pager.children[i].offsetLeft - pager.offsetLeft - pager.scrollLeft);
+  let cerca = 0;
+  for (let i = 1; i < pager.children.length; i++) {
+    if (dist(i) < dist(cerca)) {
+      cerca = i;
+    }
+  }
+  marcarPestana(cerca);
 }, {passive: true});
 
 /* ---------------------------------------------------------- el juego --- */
@@ -1191,9 +1217,18 @@ function juegoVisible(visible) {
   }
 }
 
+/*
+ * El juego no tiene pestaña: se llega tocando al BitCat de la cabecera.
+ *
+ * Es lo que lo convierte en un huevo de pascua en vez de en una pantalla mas.
+ * La vuelta si esta a la vista —las pestañas de Reloj y Dibujo siguen ahi—,
+ * porque un escondite del que no se sabe salir no es un guiño, es una trampa.
+ */
+cv.style.cursor = 'pointer';
+cv.addEventListener('pointerdown', () => irA(2));
+
 const pedirSalto = ev => { if (ev) ev.preventDefault(); jSalto = true; };
 jcv.addEventListener('pointerdown', pedirSalto);
-$('saltar').onclick = () => pedirSalto();
 $('reiniciar').onclick = () => juegoReset();
 addEventListener('keydown', ev => {
   if (jEnPantalla && (ev.code === 'Space' || ev.code === 'ArrowUp')) pedirSalto(ev);
