@@ -41,6 +41,24 @@ typedef enum {
     BITCAT_ACC_COUNT,
 } bitcat_acc_t;
 
+/* ------------------------------------------------------ version chica --- */
+
+/*
+ * BitCat en miniatura, para las vistas donde el de 31x24 no cabe: en el reloj
+ * los 128 px de ancho se los reparten la hora, el segundero y la fecha, y en el
+ * clima el icono y las tres lineas de datos.
+ *
+ * No es el mismo sprite encogido. A la mitad de tamaño las orejas se pierden y
+ * la cara se convierte en una mancha; esta redibujado para dieciseis pixeles.
+ *
+ * La animacion de reposo la decide quien llama, que es el unico que sabe cada
+ * cuanto se redibuja su vista: la cola sube o baja y los ojos se cierran.
+ */
+#define BITCAT_MINI_W 16
+#define BITCAT_MINI_H 13
+
+void bitcat_draw_mini(ssd1306_t *d, int x, int y, bool cola_arriba, bool parpadea);
+
 /* Dibuja a BitCat con la esquina superior izquierda en (x, y). */
 void bitcat_draw(ssd1306_t *d, int x, int y, bitcat_pose_t pose, bitcat_expr_t expr);
 

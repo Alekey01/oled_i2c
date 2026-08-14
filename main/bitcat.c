@@ -305,6 +305,54 @@ void bitcat_draw(ssd1306_t *d, int x, int y, bitcat_pose_t pose, bitcat_expr_t e
     }
 }
 
+/* ------------------------------------------------------ version chica --- */
+
+/*
+ * El cuerpo, sin cola ni ojos: esas dos partes se estampan aparte porque son las
+ * que se mueven. La cola arranca siempre en el mismo punto del lomo —solo cambia
+ * hacia donde tira— porque una cola que ademas cambiara de sitio se leeria como
+ * un salto, no como un movimiento.
+ */
+static const char *const MINI_CUERPO[BITCAT_MINI_H] = {
+    "##.........##...",
+    "####.....####...",
+    "#############...",
+    "#...........#...",
+    "#...........#...",
+    "#.##.....##.#...",
+    "#....###....#...",
+    "#############...",
+    ".###########....",
+    ".#.........#....",
+    ".#.........#....",
+    ".###########....",
+    "..##.....##.....",
+};
+
+/* Fila de arriba de los ojos. Al parpadear se apaga y queda solo la de abajo,
+   que a este tamaño es exactamente lo que parece un ojo cerrado. */
+static const uint8_t MINI_OJOS[4][2] = {{2, 4}, {3, 4}, {9, 4}, {10, 4}};
+
+static const uint8_t MINI_COLA_ABAJO[4][2] = {{12, 9}, {13, 10}, {14, 11}, {14, 12}};
+static const uint8_t MINI_COLA_ARRIBA[5][2] = {{12, 9}, {13, 8}, {14, 7}, {14, 6}, {13, 5}};
+
+void bitcat_draw_mini(ssd1306_t *d, int x, int y, bool cola_arriba, bool parpadea)
+{
+    estampar(d, x, y, MINI_CUERPO, BITCAT_MINI_H);
+
+    if (!parpadea) {
+        for (int i = 0; i < 4; i++) {
+            ssd1306_pixel(d, x + MINI_OJOS[i][0], y + MINI_OJOS[i][1], true);
+        }
+    }
+
+    const uint8_t (*cola)[2] = cola_arriba ? MINI_COLA_ARRIBA : MINI_COLA_ABAJO;
+    int n = cola_arriba ? 5 : 4;
+    for (int i = 0; i < n; i++) {
+        ssd1306_pixel(d, x + cola[i][0], y + cola[i][1], true);
+    }
+}
+
 const char *bitcat_expr_nombre(bitcat_expr_t expr)
 {
     static const char *n[BITCAT_EXPR_COUNT] = {

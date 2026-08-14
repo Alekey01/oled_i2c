@@ -124,6 +124,23 @@ static int s_wave_left;        /* ciclos que le quedan al saludo, 0 = caminando 
 static bitcat_expr_t s_expr = BITCAT_NORMAL;
 static int64_t s_expr_us;
 
+/*
+ * Reloj de la animacion de reposo, compartido por las vistas que la usan.
+ *
+ * Un cuadro cada 150 ms. Es lo justo para que un parpadeo de un solo cuadro dure
+ * lo que dura un parpadeo de verdad; mas lento y parece que el gato cierra los
+ * ojos a proposito.
+ */
+#define IDLE_MS       150
+#define PARPADEO_CADA 27     /* ~4 s */
+#define PARPADEO_DURA 1      /* 150 ms con los ojos cerrados */
+#define COLA_CADA     13     /* la cola sube y baja cada ~2 s */
+
+static int s_idle_tick;
+
+static bool idle_cola_arriba(void) { return (s_idle_tick / COLA_CADA) % 2 != 0; }
+static bool idle_parpadea(void)    { return (s_idle_tick % PARPADEO_CADA) < PARPADEO_DURA; }
+
 static const char *DIAS[7]   = {"DOM", "LUN", "MAR", "MIE", "JUE", "VIE", "SAB"};
 static const char *MESES[12] = {"ENE", "FEB", "MAR", "ABR", "MAY", "JUN",
                                 "JUL", "AGO", "SEP", "OCT", "NOV", "DIC"};
@@ -282,6 +299,11 @@ static void draw_clock(const struct tm *t, bool have_time)
         snprintf(buf, sizeof(buf), "%s", ble_sync_connected() ? "SINCRONIZANDO" : "ESPERA CELULAR");
     }
     text_center(24, buf, 1);
+
+    /* Abajo a la izquierda. Es el unico hueco de esta vista: arriba estan la
+       hora y la runa de bluetooth, en medio el segundero, y la fecha ocupa el
+       centro de abajo. */
+    bitcat_draw_mini(&s_oled, 3, 19, idle_cola_arriba(), idle_parpadea());
 }
 
 /* Vista 2: icono, temperatura, humedad y viento. */
@@ -316,6 +338,10 @@ static void draw_weather(const weather_t *w, const struct tm *t, bool have_time)
     snprintf(buf, sizeof(buf), "%s", weather_wmo_desc(w->wmo_code));
     buf[15] = '\0';   /* 15 caracteres = 90 px, lo que queda a la derecha del icono */
     ssd1306_text(&s_oled, 34, 25, buf, 1, true);
+
+    /* Arriba a la derecha: la temperatura va a doble tamaño pero solo llega
+       hasta la mitad, y ahi queda sitio de sobra. */
+    bitcat_draw_mini(&s_oled, 106, 0, idle_cola_arriba(), idle_parpadea());
 }
 
 /*
@@ -506,30 +532,26 @@ static void humor_por_clima(const weather_t *w, const struct tm *t, bool have_ti
  * horizontal que usa el gato de madrugada.
  */
 #define IDLE_FONDO   3
-#define IDLE_MS      120
-#define PARPADEO_CADA 33     /* ~4 s a 120 ms por cuadro */
-#define PARPADEO_DURA 2      /* ~240 ms con los ojos cerrados */
 
 /* Alturas repartidas por la franja que queda libre entre la hora y la version. */
 static const int IDLE_Y[IDLE_FONDO] = {10, 16, 21};
 static int s_idle_x[IDLE_FONDO];
-static int s_cat_tick;
 
-static void cat_reset(void)
+static void idle_reset(void)
 {
-    s_cat_tick = 0;
+    s_idle_tick = 0;
     for (int i = 0; i < IDLE_FONDO; i++) {
         s_idle_x[i] = SSD1306_WIDTH / IDLE_FONDO * i + i * 7;
     }
 }
 
-static void cat_step(void)
+static void idle_step(void)
 {
-    s_cat_tick++;
+    s_idle_tick++;
     for (int i = 0; i < IDLE_FONDO; i++) {
         /* La de delante avanza cada cuadro, la siguiente uno de cada dos, y asi:
            es el paralaje, y sale sin guardar decimales. */
-        if (s_cat_tick % (i + 1) != 0) {
+        if (s_idle_tick % (i + 1) != 0) {
             continue;
         }
         if (--s_idle_x[i] < -10) {
@@ -591,7 +613,7 @@ static void draw_cat(const weather_t *w, const struct tm *t, bool have_time)
 
     /* Parpadeo. Se salta si ya esta dormido, que ahi los ojos estan cerrados de
        serie y cerrarlos otra vez no se veria. */
-    if (expr != BITCAT_DORMIDO && (s_cat_tick % PARPADEO_CADA) < PARPADEO_DURA) {
+    if (expr != BITCAT_DORMIDO && idle_parpadea()) {
         expr = BITCAT_DORMIDO;
     }
 
@@ -1030,8 +1052,9 @@ static void display_task(void *arg)
                 s_walk_x = -BITCAT_W;
                 s_walk_tick = 0;
                 s_wave_left = 0;
-            } else if (last == VIEW_CAT) {
-                cat_reset();
+            } else if (last == VIEW_CLOCK || last == VIEW_WEATHER ||
+                       last == VIEW_CAT) {
+                idle_reset();
             } else if (last == VIEW_ANIM) {
                 s_anim_i = 0;   /* que siempre arranque por el primer cuadro */
             } else if (last == VIEW_GAME) {
@@ -1121,8 +1144,12 @@ static void display_task(void *arg)
             walk_step();
             render();
             espera_ms = REFRESH_MS_WALK;
-        } else if (s_view == VIEW_CAT) {
-            cat_step();
+        } else if (s_view == VIEW_CLOCK || s_view == VIEW_WEATHER ||
+                   s_view == VIEW_CAT) {
+            /* El segundero binario deja de alinearse al borde del segundo: a
+               150 ms por cuadro se ve saltar como mucho esa decima tarde, que no
+               se distingue, y a cambio el gato se mueve en las tres vistas. */
+            idle_step();
             render();
             espera_ms = IDLE_MS;
         } else if (s_view == VIEW_ANIM) {
