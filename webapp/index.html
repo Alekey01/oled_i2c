@@ -189,6 +189,22 @@
   .par { display: flex; gap: .5rem; }
   .par button { margin-bottom: .85rem; }
 
+  /* --- juego --- */
+  #juego {
+    display: block; width: 100%; height: auto;
+    margin-bottom: .85rem;
+    border: 2px solid var(--line);
+    background: var(--panel);
+    /* Igual que el lienzo: aqui el dedo salta, no arrastra la pagina. */
+    touch-action: none;
+    cursor: pointer;
+  }
+  #avisoJuego {
+    margin: 0 0 .85rem; text-align: center;
+    font-size: 11px; letter-spacing: .12em; text-transform: uppercase;
+    color: var(--dim);
+  }
+
   /* --- actividad y detalles tecnicos --- */
   h2 {
     margin: 1.9rem 0 .55rem;
@@ -256,6 +272,7 @@
 <nav id="pestanas">
   <button data-p="0" class="on">Reloj</button>
   <button data-p="1">Dibujo</button>
+  <button data-p="2">Juego</button>
 </nav>
 
 <div id="paginas">
@@ -307,6 +324,20 @@
       <button id="enviarAnim" disabled>Enviar al reloj</button>
       <button id="borrarAnim" class="sec" disabled>Quitar</button>
     </div>
+  </section>
+
+  <section class="pagina" aria-label="Juego">
+    <canvas id="juego" width="512" height="128"
+            aria-label="BitCat esquivando obstaculos"></canvas>
+    <p id="avisoJuego">Pulsa para saltar</p>
+
+    <dl style="margin:0 0 .85rem">
+      <div class="fila"><dt>Puntos</dt><dd id="vPuntos">0</dd></div>
+      <div class="fila"><dt>Record</dt><dd id="vRecord">0</dd></div>
+    </dl>
+
+    <button id="saltar">Saltar</button>
+    <button id="reiniciar" class="sec">Reiniciar</button>
   </section>
 
 </div>
@@ -996,6 +1027,7 @@ const pestanas = [...$('pestanas').children];
 
 function marcarPestana(i) {
   pestanas.forEach((b, j) => { b.className = j === i ? 'on' : ''; });
+  juegoVisible(i === 2);
 }
 
 function irA(i) {
@@ -1012,6 +1044,162 @@ pestanas.forEach((b, i) => { b.onclick = () => irA(i); });
 pager.addEventListener('scroll', () => {
   marcarPestana(Math.round(pager.scrollLeft / pager.clientWidth));
 }, {passive: true});
+
+/* ---------------------------------------------------------- el juego --- */
+
+/*
+ * El mismo endless runner que corre en el reloj, con sus constantes tal cual:
+ * la misma gravedad, los mismos huecos entre obstaculos y la misma curva de
+ * velocidad. Si aqui se juega distinto que en la muñeca deja de servir para
+ * practicar, que es medio motivo de tenerlo tambien en la pagina.
+ *
+ * La fisica es entera, como alla. Con decimales el salto seria mas suave, pero
+ * tambien dejaria de ser el mismo juego.
+ */
+const J = {
+  W: 128, H: 32,
+  SUELO: 31,
+  CAT_X: 6,
+  CAT_Y: 31 - GATO_H,      /* las patas justo encima del suelo */
+  VY0: 5,                  /* impulso: sube 15 px */
+  OBST: 3,
+  VEL_MIN: 3, VEL_MAX: 6,
+  HUECO_MIN: 46, HUECO_MAX: 86,
+  MS: 60,                  /* mismo cuadro que REFRESH_MS_GAME */
+};
+
+const jcv = $('juego'), jctx = jcv.getContext('2d');
+const JESC = jcv.width / J.W;
+
+let jObst = [], jAlto = 0, jVy = 0, jPuntos = 0, jTick = 0;
+let jOver = false, jArranco = false, jSalto = false;
+let jTimer = null, jEnPantalla = false;
+let jRecord = +(localStorage.getItem('bitcat-record') || 0);
+
+function juegoReset() {
+  jObst = []; jAlto = 0; jVy = 0; jPuntos = 0; jTick = 0;
+  jOver = false; jArranco = false; jSalto = false;
+  $('vPuntos').textContent = '0';
+  $('vRecord').textContent = jRecord;
+  $('avisoJuego').textContent = 'Pulsa para saltar';
+  juegoPinta();
+}
+
+const juegoVel = () => Math.min(J.VEL_MIN + Math.floor(jPuntos / 10), J.VEL_MAX);
+
+/* El hueco se mide desde el obstaculo mas adelantado y no desde el borde: si no,
+   podrian salir dos pegados y no habria forma de saltarlos. */
+function soltarObstaculo() {
+  let derecha = J.W;
+  for (const o of jObst) derecha = Math.max(derecha, o.x + o.w);
+  const hueco = J.HUECO_MIN + Math.floor(Math.random() * (J.HUECO_MAX - J.HUECO_MIN + 1));
+  jObst.push({
+    x: derecha + hueco,
+    w: 4 + Math.floor(Math.random() * 3),
+    h: 6 + Math.floor(Math.random() * 5),
+    contado: false,
+  });
+}
+
+/* Caja del gato: solo cuerpo y patas. La cabeza va muy arriba para chocar con
+   algo apoyado en el suelo, y contarla haria el juego injustamente dificil. */
+function choca(o, catY) {
+  const cx0 = J.CAT_X + 9, cx1 = J.CAT_X + 21;
+  const cy0 = catY + 15,   cy1 = catY + 23;
+  const ox0 = o.x,         ox1 = o.x + o.w - 1;
+  const oy0 = J.SUELO - o.h, oy1 = J.SUELO - 1;
+  return cx0 <= ox1 && cx1 >= ox0 && cy0 <= oy1 && cy1 >= oy0;
+}
+
+function juegoPaso() {
+  jTick++;
+
+  if (jOver) {
+    if (jSalto) { jSalto = false; juegoReset(); }
+    return;
+  }
+  if (jSalto) {
+    jSalto = false;
+    jArranco = true;
+    if (jAlto === 0) jVy = J.VY0;
+  }
+  /* Hasta el primer salto el mundo no se mueve: da tiempo a leer la ayuda. */
+  if (!jArranco) return;
+
+  jAlto += jVy;
+  jVy--;
+  if (jAlto <= 0) { jAlto = 0; jVy = 0; }
+
+  const vel = juegoVel();
+  const catY = J.CAT_Y - jAlto;
+
+  for (const o of jObst) {
+    o.x -= vel;
+    if (!o.contado && o.x + o.w < J.CAT_X + 9) { o.contado = true; jPuntos++; }
+    if (choca(o, catY)) {
+      jOver = true;
+      if (jPuntos > jRecord) {
+        jRecord = jPuntos;
+        try { localStorage.setItem('bitcat-record', jRecord); } catch (e) {}
+      }
+      $('avisoJuego').textContent = 'Game over · pulsa para reiniciar';
+      $('vRecord').textContent = jRecord;
+      return;
+    }
+  }
+  jObst = jObst.filter(o => o.x + o.w >= 0);
+  if (jObst.length < J.OBST) soltarObstaculo();
+
+  $('vPuntos').textContent = jPuntos;
+  if (jArranco) $('avisoJuego').textContent = '\u00a0';
+}
+
+function juegoPinta() {
+  const css = getComputedStyle(document.body);
+  jctx.fillStyle = css.getPropertyValue('--panel');
+  jctx.fillRect(0, 0, jcv.width, jcv.height);
+  jctx.fillStyle = css.getPropertyValue('--fg');
+
+  const r = (x, y, w, h) => jctx.fillRect(x * JESC, y * JESC, w * JESC, h * JESC);
+
+  for (let x = 0; x < J.W; x += 4) r(x, J.SUELO, 2, 1);
+  for (const o of jObst) r(o.x, J.SUELO - o.h, o.w, o.h);
+
+  /* En el aire va con las patas juntas; en el suelo alterna la carrera. */
+  const f = GATO_CAMINA[jAlto > 0 ? 0 : Math.floor(jTick / 2) % GATO_CAMINA.length];
+  const cy = J.CAT_Y - jAlto;
+  for (let fr = 0; fr < GATO_H; fr++)
+    for (let c = 0; c < GATO_W; c++)
+      if (f[fr][c] === '#') r(J.CAT_X + c, cy + fr, 1, 1);
+}
+
+function juegoBucle() {
+  juegoPaso();
+  juegoPinta();
+}
+
+/* Solo corre cuando su pantalla esta a la vista: un bucle a 60 ms detras de una
+   pantalla que no se ve es bateria del celular tirada. */
+function juegoVisible(visible) {
+  if (visible === jEnPantalla) return;
+  jEnPantalla = visible;
+  if (visible) {
+    jTimer = setInterval(juegoBucle, J.MS);
+  } else {
+    clearInterval(jTimer);
+    jTimer = null;
+  }
+}
+
+const pedirSalto = ev => { if (ev) ev.preventDefault(); jSalto = true; };
+jcv.addEventListener('pointerdown', pedirSalto);
+$('saltar').onclick = () => pedirSalto();
+$('reiniciar').onclick = () => juegoReset();
+addEventListener('keydown', ev => {
+  if (jEnPantalla && (ev.code === 'Space' || ev.code === 'ArrowUp')) pedirSalto(ev);
+});
+
+juegoReset();
 
 /* ------------------------------------------------ editor de animacion --- */
 
